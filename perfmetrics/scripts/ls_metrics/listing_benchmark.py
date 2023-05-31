@@ -221,8 +221,8 @@ def _perform_testing(
     local_dir_path = './{}/{}/'.format(persistent_disk, testing_folder.name)
     gcs_bucket_path = './{}/{}/'.format(gcs_bucket, testing_folder.name)
 
-    persistent_disk_results[testing_folder.name] = _record_time_of_operation(
-        command, local_dir_path, num_samples)
+    #persistent_disk_results[testing_folder.name] = _record_time_of_operation(
+        #command, local_dir_path, num_samples)
     gcs_bucket_results[testing_folder.name] = _record_time_of_operation(
         command, gcs_bucket_path, num_samples)
 
