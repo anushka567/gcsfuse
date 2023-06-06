@@ -52,7 +52,7 @@ log = logging.getLogger()
 
 WORKSHEET_NAME_GCS = 'ls_metrics_gcsfuse'
 WORKSHEET_NAME_PD = 'ls_metrics_persistent_disk'
-
+TEST_FOLDER_NAME = '1KB_100files_0subdir'
 
 def _count_number_of_files_and_folders(directory, files, folders):
   """Count the number of files and folders in the given directory recursively.
@@ -142,25 +142,26 @@ def _parse_results(folders, results_list, message, num_samples) -> dict:
   metrics = dict()
 
   for testing_folder in folders:
-    metrics[testing_folder.name] = dict()
-    metrics[testing_folder.name]['Test Desc.'] = message
-    metrics[testing_folder.name]['Number of samples'] = num_samples
+    if testing_folder.name == TEST_FOLDER_NAME:
+        metrics[testing_folder.name] = dict()
+        metrics[testing_folder.name]['Test Desc.'] = message
+        metrics[testing_folder.name]['Number of samples'] = num_samples
 
     # Sorting based on time.
-    results_list[testing_folder.name] = sorted(
+        results_list[testing_folder.name] = sorted(
         results_list[testing_folder.name])
-    metrics[testing_folder.name]['Mean'] = round(
+        metrics[testing_folder.name]['Mean'] = round(
         stat.mean(results_list[testing_folder.name]), 3)
-    metrics[testing_folder.name]['Median'] = round(
+        metrics[testing_folder.name]['Median'] = round(
         stat.median(results_list[testing_folder.name]), 3)
-    metrics[testing_folder.name]['Standard Dev'] = round(
+        metrics[testing_folder.name]['Standard Dev'] = round(
         stat.stdev(results_list[testing_folder.name]), 3)
 
-    metrics[testing_folder.name]['Quantiles'] = dict()
-    sample_set = [0, 20, 50, 90, 95, 98, 99, 99.5, 99.9, 100]
-    for percentile in sample_set:
-      metrics[testing_folder.name]['Quantiles']['{} %ile'.format(percentile)] = round(
-          np.percentile(results_list[testing_folder.name], percentile), 3)
+        metrics[testing_folder.name]['Quantiles'] = dict()
+        sample_set = [0, 20, 50, 90, 95, 98, 99, 99.5, 99.9, 100]
+        for percentile in sample_set:
+            metrics[testing_folder.name]['Quantiles']['{} %ile'.format(percentile)] = round(
+                np.percentile(results_list[testing_folder.name], percentile), 3)
 
   print(metrics)
   return metrics
@@ -214,20 +215,20 @@ def _perform_testing(
   """
 
   gcs_bucket_results = {}
-  persistent_disk_results = {}
+  # persistent_disk_results = {}
 
-  for testing_folder in folders:
-    log.info('Testing started for testing folder: %s\n', testing_folder.name)
-    local_dir_path = './{}/{}/'.format(persistent_disk, testing_folder.name)
-    gcs_bucket_path = './{}/{}/'.format(gcs_bucket, testing_folder.name)
 
-    persistent_disk_results[testing_folder.name] = _record_time_of_operation(
-        command, local_dir_path, num_samples)
-    gcs_bucket_results[testing_folder.name] = _record_time_of_operation(
+  log.info('Testing started for testing folder: %s\n', "1KB_100files_0subdir")
+  # local_dir_path = './{}/{}/'.format(persistent_disk, testing_folder.name)
+  gcs_bucket_path = './{}/{}/'.format(gcs_bucket, "1KB_100files_0subdir")
+
+    # persistent_disk_results[testing_folder.name] = _record_time_of_operation(
+    #     command, local_dir_path, num_samples)
+  gcs_bucket_results["1KB_100files_0subdir"] = _record_time_of_operation(
         command, gcs_bucket_path, num_samples)
 
   log.info('Testing completed. Generating output.\n')
-  return gcs_bucket_results, persistent_disk_results
+  return gcs_bucket_results
 
 
 def _create_directory_structure(
@@ -528,7 +529,7 @@ if __name__ == '__main__':
 
   gcs_bucket = _mount_gcs_bucket(directory_structure.name)
 
-  gcs_bucket_results, persistent_disk_results = _perform_testing(
+  gcs_bucket_results = _perform_testing(
       directory_structure.folders, gcs_bucket, persistent_disk,
       int(args.num_samples[0]), args.command[0])
 
@@ -536,18 +537,18 @@ if __name__ == '__main__':
       directory_structure.folders, gcs_bucket_results, args.message[0],
       int(args.num_samples[0]))
 
-  pd_parsed_metrics = _parse_results(
-      directory_structure.folders, persistent_disk_results, args.message[0],
-      int(args.num_samples[0]))
+  # pd_parsed_metrics = _parse_results(
+  #     directory_structure.folders, persistent_disk_results, args.message[0],
+  #     int(args.num_samples[0]))
 
   if args.upload:
     log.info('Uploading files to the Google Sheet.\n')
     _export_to_gsheet(
         directory_structure.folders, gcs_parsed_metrics, args.command[0],
         WORKSHEET_NAME_GCS)
-    _export_to_gsheet(
-        directory_structure.folders, pd_parsed_metrics, args.command[0],
-        WORKSHEET_NAME_PD)
+    # _export_to_gsheet(
+    #     directory_structure.folders, pd_parsed_metrics, args.command[0],
+    #     WORKSHEET_NAME_PD)
 
   if not args.keep_files:
     log.info('Deleting files from persistent disk.\n')
