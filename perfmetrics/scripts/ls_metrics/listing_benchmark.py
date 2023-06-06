@@ -218,13 +218,13 @@ def _perform_testing(
   # persistent_disk_results = {}
 
 
-  log.info('Testing started for testing folder: %s\n', "1KB_100files_0subdir")
+  log.info('Testing started for testing folder: %s\n', TEST_FOLDER_NAME)
   # local_dir_path = './{}/{}/'.format(persistent_disk, testing_folder.name)
-  gcs_bucket_path = './{}/{}/'.format(gcs_bucket, "1KB_100files_0subdir")
+  gcs_bucket_path = './{}/{}/'.format(gcs_bucket, TEST_FOLDER_NAME)
 
     # persistent_disk_results[testing_folder.name] = _record_time_of_operation(
     #     command, local_dir_path, num_samples)
-  gcs_bucket_results["1KB_100files_0subdir"] = _record_time_of_operation(
+  gcs_bucket_results[TEST_FOLDER_NAME] = _record_time_of_operation(
         command, gcs_bucket_path, num_samples)
 
   log.info('Testing completed. Generating output.\n')
