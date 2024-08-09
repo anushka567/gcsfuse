@@ -66,7 +66,7 @@ jobs:
         only-new-issues: true
   py-unit-test:
     name: Python Unit Tests
-    runs on: ubuntu-20.04
+    runs-on: ubuntu-20.04
     steps:
     - name: checkout code
       uses: actions/checkout@v4
