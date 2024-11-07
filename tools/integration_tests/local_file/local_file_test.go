@@ -22,7 +22,6 @@ import (
 	"os"
 	"path"
 	"testing"
-	"time"
 
 	"cloud.google.com/go/storage"
 	"github.com/googlecloudplatform/gcsfuse/v2/tools/integration_tests/util/client"
@@ -78,7 +77,7 @@ func TestMain(m *testing.M) {
 
 	// Create storage client before running tests.
 	ctx = context.Background()
-	closeStorageClient := client.CreateStorageClientWithTimeOut(&ctx, &storageClient, time.Minute*15)
+	closeStorageClient := client.CreateStorageClientWithCancel(&ctx, &storageClient)
 	defer func() {
 		err := closeStorageClient()
 		if err != nil {
@@ -101,6 +100,10 @@ func TestMain(m *testing.M) {
 		{"--implicit-dirs=true", "--rename-dir-limit=3"},
 		{"--implicit-dirs=false", "--rename-dir-limit=3"}}
 
+	if hnsFlagSet, err := setup.AddHNSFlagForHierarchicalBucket(ctx, storageClient); err == nil {
+		flagsSet = append(flagsSet, hnsFlagSet)
+	}
+
 	if !testing.Short() {
 		setup.AppendFlagsToAllFlagsInTheFlagsSet(&flagsSet, "--client-protocol=grpc")
 	}
@@ -111,7 +114,10 @@ func TestMain(m *testing.M) {
 		successCode = only_dir_mounting.RunTests(flagsSet, onlyDirMounted, m)
 	}
 
-	if successCode == 0 {
+	// Dynamic mounting tests create a bucket and perform tests on that bucket,
+	// which is not a hierarchical bucket. So we are not running those tests with
+	// hierarchical bucket.
+	if successCode == 0 && !setup.IsHierarchicalBucket(ctx, storageClient) {
 		successCode = dynamic_mounting.RunTests(ctx, storageClient, flagsSet, m)
 	}
 

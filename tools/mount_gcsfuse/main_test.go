@@ -36,48 +36,48 @@ func TestMakeGcsfuseArgs(t *testing.T) {
 			name: "TestMakeGcsfuseArgs for BooleanFlags with underscore",
 			opts: map[string]string{"implicit_dirs": "",
 				"foreground":                    "true",
-				"experimental_local_file_cache": "",
 				"reuse_token_from_url":          "false",
 				"enable_nonexistent_type_cache": "",
 				"experimental_enable_json_read": "true",
 				"enable_hns":                    "",
 				"ignore_interrupts":             "",
 				"anonymous_access":              "false",
-				"log_rotate_compress":           "false"},
+				"log_rotate_compress":           "false",
+				"disable_viper_config":          "true"},
 			expectedFlags: []string{"--implicit-dirs=true",
 				"--foreground=true",
-				"--experimental-local-file-cache=true",
 				"--reuse-token-from-url=false",
 				"--enable-nonexistent-type-cache=true",
 				"--experimental-enable-json-read=true",
 				"--enable-hns=true",
 				"--ignore-interrupts=true",
 				"--anonymous-access=false",
-				"--log-rotate-compress=false"},
+				"--log-rotate-compress=false",
+				"--disable-viper-config=true"},
 		},
 
 		{
 			name: "TestMakeGcsfuseArgs for BooleanFlags with hyphens",
 			opts: map[string]string{"implicit_dirs": "",
 				"foreground":                    "true",
-				"experimental-local-file-cache": "",
 				"reuse-token-from-url":          "false",
 				"enable-nonexistent-type-cache": "",
 				"experimental-enable-json-read": "true",
 				"enable-hns":                    "",
 				"ignore-interrupts":             "",
 				"anonymous-access":              "false",
-				"log_rotate-compress":           "false"},
+				"log_rotate-compress":           "false",
+				"disable-viper-config":          "false"},
 			expectedFlags: []string{"--implicit-dirs=true",
 				"--foreground=true",
-				"--experimental-local-file-cache=true",
 				"--reuse-token-from-url=false",
 				"--enable-nonexistent-type-cache=true",
 				"--experimental-enable-json-read=true",
 				"--enable-hns=true",
 				"--ignore-interrupts=true",
 				"--anonymous-access=false",
-				"--log-rotate-compress=false"},
+				"--log-rotate-compress=false",
+				"--disable-viper-config=false"},
 		},
 
 		{
@@ -103,7 +103,7 @@ func TestMakeGcsfuseArgs(t *testing.T) {
 		{
 			name:          "TestMakeGcsfuseArgs with DebugFlags",
 			opts:          map[string]string{"debug_fuse": "", "debug_gcs": ""},
-			expectedFlags: []string{"--debug_fuse", "--debug_gcs"},
+			expectedFlags: []string{"--debug_fuse=true", "--debug_gcs=true"},
 		},
 
 		// Test ignored options
@@ -124,7 +124,14 @@ func TestMakeGcsfuseArgs(t *testing.T) {
 			opts: map[string]string{
 				"implicit_dirs": "", "file_mode": "0644", "debug_fuse": "", "allow_other": "",
 			},
-			expectedFlags: []string{"--implicit-dirs=true", "--file-mode", "0644", "--debug_fuse", "-o", "allow_other"},
+			expectedFlags: []string{"--implicit-dirs=true", "--file-mode", "0644", "--debug_fuse=true", "-o", "allow_other"},
+		},
+		{
+			name: "TestMakeGcsfuseArgs with o as flag",
+			opts: map[string]string{
+				"o": "a", "allow_other": "",
+			},
+			expectedFlags: []string{"-o", "o=a", "-o", "allow_other"},
 		},
 	}
 	device := "gcsfuse"
@@ -137,6 +144,44 @@ func TestMakeGcsfuseArgs(t *testing.T) {
 			if assert.Nil(t, err) {
 				assert.ElementsMatch(t, args[:len(args)-2], tc.expectedFlags)
 				assert.Equal(t, args[len(args)-2:], []string{device, mountPoint})
+			}
+		})
+	}
+}
+
+func TestParseArgs_DeviceIsParsedCorrectly(t *testing.T) {
+	testCases := []struct {
+		name           string
+		device         string
+		mountPoint     string
+		expectedDevice string
+	}{
+		{
+			name:           "device_bucket_name",
+			device:         "fake_bucket",
+			mountPoint:     "a/b/mnt/fake_bucket",
+			expectedDevice: "fake_bucket",
+		},
+		{
+			name:           "path_device_name",
+			device:         "/mnt/fake_bucket",
+			mountPoint:     "/mnt/fake_bucket",
+			expectedDevice: "fake_bucket",
+		},
+		{
+			name:           "nested_path_device_name",
+			device:         "a/b/mnt/fake_bucket",
+			mountPoint:     "a/b/mnt/fake_bucket",
+			expectedDevice: "fake_bucket",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotDevice, _, _, err := parseArgs([]string{"/path_to_executable", tc.device, tc.mountPoint})
+
+			if assert.NoError(t, err) {
+				assert.Equal(t, tc.expectedDevice, gotDevice)
 			}
 		})
 	}

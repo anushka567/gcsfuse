@@ -25,7 +25,6 @@ import (
 )
 
 const DirectoryForListLargeFileTests = "directoryForListLargeFileTests"
-const DirectoryWithTwelveThousandFiles = "directoryWithTwelveThousandFiles"
 const PrefixFileInDirectoryWithTwelveThousandFiles = "fileInDirectoryWithTwelveThousandFiles"
 const PrefixExplicitDirInLargeDirListTest = "explicitDirInLargeDirListTest"
 const PrefixImplicitDirInLargeDirListTest = "implicitDirInLargeDirListTest"
@@ -33,12 +32,14 @@ const NumberOfFilesInDirectoryWithTwelveThousandFiles = 12000
 const NumberOfImplicitDirsInDirectoryWithTwelveThousandFiles = 100
 const NumberOfExplicitDirsInDirectoryWithTwelveThousandFiles = 100
 
+var DirectoryWithTwelveThousandFiles = "directoryWithTwelveThousandFiles" + setup.GenerateRandomString(5)
+
 func TestMain(m *testing.M) {
 	setup.ParseSetUpFlags()
 
 	flags := [][]string{{"--implicit-dirs", "--stat-cache-ttl=0", "--kernel-list-cache-ttl-secs=-1"}}
 	if !testing.Short() {
-		flags = append(flags, []string{"--client-protocol=grpc", "--implicit-dirs=true", "--stat-cache-ttl=0"})
+		flags = append(flags, []string{"--client-protocol=grpc", "--implicit-dirs=true", "--stat-cache-ttl=0", "--kernel-list-cache-ttl-secs=-1"})
 	}
 
 	if setup.TestBucket() == "" && setup.MountedDirectory() != "" {

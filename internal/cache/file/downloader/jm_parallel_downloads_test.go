@@ -17,7 +17,6 @@ package downloader
 import (
 	"context"
 	"crypto/rand"
-	"math"
 	"os"
 	"path"
 	"testing"
@@ -31,6 +30,7 @@ import (
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/storage/gcs"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/storage/storageutil"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func createObjectInBucket(t *testing.T, objPath string, objSize int64, bucket gcs.Bucket) []byte {
@@ -98,31 +98,38 @@ func TestParallelDownloads(t *testing.T) {
 		parallelDownloadsPerFile int64
 		maxParallelDownloads     int64
 		downloadOffset           int64
-		expectedOffset           int64
 		subscribedOffset         int64
+		enableODirect            bool
 	}{
 		{
-			name:                     "download in chunks of concurrency * readReqSize",
+			name:                     "download the entire object when object size > no of goroutines * readReqSize",
 			objectSize:               15 * util.MiB,
 			readReqSize:              3,
-			parallelDownloadsPerFile: math.MaxInt,
+			parallelDownloadsPerFile: 100,
 			maxParallelDownloads:     3,
 			subscribedOffset:         7,
 			downloadOffset:           10,
-			// Concurrency can go to (maxParallelDownloads + 1) in case
-			// parallelDownloadsPerFile > maxParallelDownloads because we always
-			// spawn a minimum of 1 go routine per async job.
-			expectedOffset: 12 * util.MiB,
+			enableODirect:            true,
 		},
 		{
 			name:                     "download only upto the object size",
 			objectSize:               10 * util.MiB,
 			readReqSize:              4,
-			parallelDownloadsPerFile: math.MaxInt,
+			parallelDownloadsPerFile: 100,
 			maxParallelDownloads:     3,
 			subscribedOffset:         7,
 			downloadOffset:           10,
-			expectedOffset:           10 * util.MiB,
+			enableODirect:            true,
+		},
+		{
+			name:                     "download the entire object with O_DIRECT disabled.",
+			objectSize:               16 * util.MiB,
+			readReqSize:              4,
+			parallelDownloadsPerFile: 100,
+			maxParallelDownloads:     3,
+			subscribedOffset:         7,
+			downloadOffset:           10,
+			enableODirect:            false,
 		},
 	}
 	for _, tc := range tbl {
@@ -133,8 +140,15 @@ func TestParallelDownloads(t *testing.T) {
 			storageHandle := configureFakeStorage(t)
 			bucket := storageHandle.BucketHandle(storage.TestBucketName, "")
 			minObj, content := createObjectInStoreAndInitCache(t, cache, bucket, "path/in/gcs/foo.txt", tc.objectSize)
-			jm := NewJobManager(cache, util.DefaultFilePerm, util.DefaultDirPerm, cacheDir, 2, &cfg.FileCacheConfig{EnableParallelDownloads: true,
-				ParallelDownloadsPerFile: tc.parallelDownloadsPerFile, DownloadChunkSizeMb: tc.readReqSize, EnableCrc: true, MaxParallelDownloads: tc.maxParallelDownloads})
+			fileCacheConfig := &cfg.FileCacheConfig{
+				EnableParallelDownloads:  true,
+				ParallelDownloadsPerFile: tc.parallelDownloadsPerFile,
+				DownloadChunkSizeMb:      tc.readReqSize, EnableCrc: true,
+				MaxParallelDownloads: tc.maxParallelDownloads,
+				WriteBufferSize:      4 * 1024 * 1024,
+				EnableODirect:        tc.enableODirect,
+			}
+			jm := NewJobManager(cache, util.DefaultFilePerm, util.DefaultDirPerm, cacheDir, 2, fileCacheConfig)
 			job := jm.CreateJobIfNotExists(&minObj, bucket)
 			subscriberC := job.subscribe(tc.subscribedOffset)
 
@@ -145,9 +159,9 @@ func TestParallelDownloads(t *testing.T) {
 				select {
 				case jobStatus := <-subscriberC:
 					if assert.Nil(t, err) {
-						assert.Equal(t, tc.expectedOffset, jobStatus.Offset)
+						require.GreaterOrEqual(t, tc.objectSize, jobStatus.Offset)
 						verifyFileTillOffset(t,
-							data.FileSpec{Path: util.GetDownloadPath(path.Join(cacheDir, storage.TestBucketName), "path/in/gcs/foo.txt"), FilePerm: util.DefaultFilePerm, DirPerm: util.DefaultDirPerm}, tc.expectedOffset,
+							data.FileSpec{Path: util.GetDownloadPath(path.Join(cacheDir, storage.TestBucketName), "path/in/gcs/foo.txt"), FilePerm: util.DefaultFilePerm, DirPerm: util.DefaultDirPerm}, jobStatus.Offset,
 							content)
 					}
 					return
@@ -167,8 +181,15 @@ func TestMultipleConcurrentDownloads(t *testing.T) {
 	bucket := storageHandle.BucketHandle(storage.TestBucketName, "")
 	minObj1, content1 := createObjectInStoreAndInitCache(t, cache, bucket, "path/in/gcs/foo.txt", 10*util.MiB)
 	minObj2, content2 := createObjectInStoreAndInitCache(t, cache, bucket, "path/in/gcs/bar.txt", 5*util.MiB)
-	jm := NewJobManager(cache, util.DefaultFilePerm, util.DefaultDirPerm, cacheDir, 2, &cfg.FileCacheConfig{EnableParallelDownloads: true,
-		ParallelDownloadsPerFile: math.MaxInt, DownloadChunkSizeMb: 2, EnableCrc: true, MaxParallelDownloads: 2})
+	fileCacheConfig := &cfg.FileCacheConfig{
+		EnableParallelDownloads:  true,
+		ParallelDownloadsPerFile: 100,
+		DownloadChunkSizeMb:      2,
+		EnableCrc:                true,
+		MaxParallelDownloads:     2,
+		WriteBufferSize:          4 * 1024 * 1024,
+	}
+	jm := NewJobManager(cache, util.DefaultFilePerm, util.DefaultDirPerm, cacheDir, 2, fileCacheConfig)
 	job1 := jm.CreateJobIfNotExists(&minObj1, bucket)
 	job2 := jm.CreateJobIfNotExists(&minObj2, bucket)
 	s1 := job1.subscribe(10 * util.MiB)

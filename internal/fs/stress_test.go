@@ -16,7 +16,6 @@ package fs_test
 
 import (
 	"fmt"
-	"io/ioutil"
 	"math/rand"
 	"os"
 	"path"
@@ -24,11 +23,10 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/net/context"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/jacobsa/fuse/fusetesting"
 	. "github.com/jacobsa/ogletest"
-	"github.com/jacobsa/syncutil"
 )
 
 ////////////////////////////////////////////////////////////////////////
@@ -106,7 +104,7 @@ func (t *StressTest) CreateAndReadManyFilesInParallel() {
 	err = forEachName(
 		names,
 		func(n string) (err error) {
-			err = ioutil.WriteFile(path.Join(mntDir, n), []byte(n), 0400)
+			err = os.WriteFile(path.Join(mntDir, n), []byte(n), 0400)
 			return
 		})
 
@@ -116,7 +114,7 @@ func (t *StressTest) CreateAndReadManyFilesInParallel() {
 	err = forEachName(
 		names,
 		func(n string) (err error) {
-			contents, err := ioutil.ReadFile(path.Join(mntDir, n))
+			contents, err := os.ReadFile(path.Join(mntDir, n))
 			if err != nil {
 				err = fmt.Errorf("ReadFile: %w", err)
 				return
@@ -164,19 +162,19 @@ func (t *StressTest) TruncateFileManyTimesInParallel() {
 	}
 
 	// Run several workers.
-	b := syncutil.NewBundle(ctx)
+	group := new(errgroup.Group)
 
 	const numWorkers = 16
 	finalSizes := make(chan int64, numWorkers)
 
 	for i := 0; i < numWorkers; i++ {
-		b.Add(func(ctx context.Context) (err error) {
+		group.Go(func() (err error) {
 			err = worker(finalSizes)
 			return
 		})
 	}
 
-	err = b.Join()
+	err = group.Wait()
 	AssertEq(nil, err)
 
 	close(finalSizes)

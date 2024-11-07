@@ -16,15 +16,14 @@ package fs_test
 
 import (
 	"context"
-	"io/ioutil"
 	"os"
 	"path"
 	"time"
 
+	"github.com/googlecloudplatform/gcsfuse/v2/cfg"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/cache/lru"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/cache/metadata"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/fs/inode"
-	"github.com/googlecloudplatform/gcsfuse/v2/internal/mount"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/storage/caching"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/storage/fake"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/storage/gcs"
@@ -57,7 +56,7 @@ func (t *cachingTestCommon) SetUpTestSuite() {
 	// Wrap the bucket in a stat caching layer for the purposes of the file
 	// system.
 	uncachedBucket = fake.NewFakeBucket(timeutil.RealClock(), "some_bucket", gcs.NonHierarchical)
-	lruCache := newLruCache(uint64(1000 * mount.AverageSizeOfPositiveStatCacheEntry))
+	lruCache := newLruCache(uint64(1000 * cfg.AverageSizeOfPositiveStatCacheEntry))
 	statCache := metadata.NewStatCacheBucketView(lruCache, "")
 	bucket = caching.NewFastStatBucket(
 		ttl,
@@ -124,15 +123,15 @@ func (t *CachingTest) FileCreatedRemotely() {
 	ExpectEq(len(contents), fi.Size())
 
 	// And read it.
-	b, err := ioutil.ReadFile(path.Join(mntDir, name))
+	b, err := os.ReadFile(path.Join(mntDir, name))
 	AssertEq(nil, err)
 	ExpectEq(contents, string(b))
 
 	// And overwrite it, and read it back again.
-	err = ioutil.WriteFile(path.Join(mntDir, name), []byte("burrito"), 0500)
+	err = os.WriteFile(path.Join(mntDir, name), []byte("burrito"), 0500)
 	AssertEq(nil, err)
 
-	b, err = ioutil.ReadFile(path.Join(mntDir, name))
+	b, err = os.ReadFile(path.Join(mntDir, name))
 	AssertEq(nil, err)
 	ExpectEq("burrito", string(b))
 }
@@ -143,7 +142,7 @@ func (t *CachingTest) FileChangedRemotely() {
 	var err error
 
 	// Create a file via the file system.
-	err = ioutil.WriteFile(path.Join(mntDir, name), []byte("taco"), 0500)
+	err = os.WriteFile(path.Join(mntDir, name), []byte("taco"), 0500)
 	AssertEq(nil, err)
 
 	// Overwrite the object in GCS.
@@ -169,7 +168,7 @@ func (t *CachingTest) FileChangedRemotely() {
 	ExpectEq(len("burrito"), fi.Size())
 
 	// Reading should work as expected.
-	b, err := ioutil.ReadFile(path.Join(mntDir, name))
+	b, err := os.ReadFile(path.Join(mntDir, name))
 	AssertEq(nil, err)
 	ExpectEq("burrito", string(b))
 }
@@ -254,7 +253,7 @@ func (t *CachingTest) TypeOfNameChanges_LocalModifier() {
 	err = os.Remove(path.Join(mntDir, name))
 	AssertEq(nil, err)
 
-	err = ioutil.WriteFile(path.Join(mntDir, name), []byte("taco"), 0400)
+	err = os.WriteFile(path.Join(mntDir, name), []byte("taco"), 0400)
 	AssertEq(nil, err)
 
 	// All caches should have been updated.
@@ -369,7 +368,7 @@ func (t *CachingWithImplicitDirsTest) SymlinksWork() {
 	fileName := path.Join(mntDir, "foo")
 	const contents = "taco"
 
-	err = ioutil.WriteFile(fileName, []byte(contents), 0400)
+	err = os.WriteFile(fileName, []byte(contents), 0400)
 	AssertEq(nil, err)
 
 	// Create a symlink to it.
@@ -456,7 +455,7 @@ func getMultiMountBucketDir(bucketName string) string {
 }
 
 func (t *MultiBucketMountCachingTest) SetUpTestSuite() {
-	sharedCache := newLruCache(uint64(1000 * mount.AverageSizeOfPositiveStatCacheEntry))
+	sharedCache := newLruCache(uint64(1000 * cfg.AverageSizeOfPositiveStatCacheEntry))
 	uncachedBuckets = make(map[string]gcs.Bucket)
 	buckets = make(map[string]gcs.Bucket)
 

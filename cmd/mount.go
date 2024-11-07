@@ -17,9 +17,9 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/googlecloudplatform/gcsfuse/v2/cfg"
-	"github.com/googlecloudplatform/gcsfuse/v2/internal/config"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/mount"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/storage"
 	"golang.org/x/net/context"
@@ -40,8 +40,6 @@ func mountWithStorageHandle(
 	bucketName string,
 	mountPoint string,
 	newConfig *cfg.Config,
-	flags *flagStorage,
-	mountConfig *config.MountConfig,
 	storageHandle storage.StorageHandle) (mfs *fuse.MountedFileSystem, err error) {
 	// Sanity check: make sure the temporary directory exists and is writable
 	// currently. This gives a better user experience than harder to debug EIO
@@ -54,8 +52,8 @@ func mountWithStorageHandle(
 
 		if err != nil {
 			err = fmt.Errorf(
-				"Error writing to temporary directory (%q); are you sure it exists "+
-					"with the correct permissions?",
+				"error writing to temporary directory (%q); are you sure it exists "+
+					"with the correct permissions",
 				err.Error())
 			return
 		}
@@ -86,24 +84,16 @@ be interacting with the file system.`)
 		gid = uint32(newConfig.FileSystem.Gid)
 	}
 
-	metadataCacheTTL := mount.ResolveMetadataCacheTTL(newConfig.MetadataCache.DeprecatedStatCacheTtl, newConfig.MetadataCache.DeprecatedTypeCacheTtl, mountConfig.MetadataCacheConfig.TtlInSeconds)
-	statCacheMaxSizeMB, err := mount.ResolveStatCacheMaxSizeMB(mountConfig.StatCacheMaxSizeMB, int(newConfig.MetadataCache.DeprecatedStatCacheCapacity))
-	if err != nil {
-		return nil, fmt.Errorf("failed to calculate StatCacheMaxSizeMB from stat-cache-capacity=%v, metadata-cache:stat-cache-max-size-mb=%v: %w",
-			newConfig.MetadataCache.DeprecatedStatCacheCapacity, mountConfig.StatCacheMaxSizeMB, err)
-	}
-
 	bucketCfg := gcsx.BucketConfig{
 		BillingProject:                     newConfig.GcsConnection.BillingProject,
 		OnlyDir:                            newConfig.OnlyDir,
 		EgressBandwidthLimitBytesPerSecond: newConfig.GcsConnection.LimitBytesPerSec,
 		OpRateLimitHz:                      newConfig.GcsConnection.LimitOpsPerSec,
-		StatCacheMaxSizeMB:                 statCacheMaxSizeMB,
-		StatCacheTTL:                       metadataCacheTTL,
+		StatCacheMaxSizeMB:                 uint64(newConfig.MetadataCache.StatCacheMaxSizeMb),
+		StatCacheTTL:                       time.Duration(newConfig.MetadataCache.TtlSecs) * time.Second,
 		EnableMonitoring:                   newConfig.Metrics.StackdriverExportInterval > 0 || newConfig.Metrics.PrometheusPort != 0,
 		AppendThreshold:                    1 << 21, // 2 MiB, a total guess.
 		TmpObjectPrefix:                    ".gcsfuse_tmp/",
-		DebugGCS:                           newConfig.Debug.Gcs,
 	}
 	bm := gcsx.NewBucketManager(bucketCfg, storageHandle)
 
@@ -115,16 +105,15 @@ be interacting with the file system.`)
 		LocalFileCache:             false,
 		TempDir:                    string(newConfig.FileSystem.TempDir),
 		ImplicitDirectories:        newConfig.ImplicitDirs,
-		InodeAttributeCacheTTL:     metadataCacheTTL,
-		DirTypeCacheTTL:            metadataCacheTTL,
+		InodeAttributeCacheTTL:     time.Duration(newConfig.MetadataCache.TtlSecs) * time.Second,
+		DirTypeCacheTTL:            time.Duration(newConfig.MetadataCache.TtlSecs) * time.Second,
 		Uid:                        uid,
 		Gid:                        gid,
 		FilePerms:                  os.FileMode(newConfig.FileSystem.FileMode),
 		DirPerms:                   os.FileMode(newConfig.FileSystem.DirMode),
 		RenameDirLimit:             newConfig.FileSystem.RenameDirLimit,
-		SequentialReadSizeMb:       flags.SequentialReadSizeMb,
+		SequentialReadSizeMb:       int32(newConfig.GcsConnection.SequentialReadSizeMb),
 		EnableNonexistentTypeCache: newConfig.MetadataCache.EnableNonexistentTypeCache,
-		MountConfig:                mountConfig,
 		NewConfig:                  newConfig,
 	}
 
@@ -144,17 +133,17 @@ be interacting with the file system.`)
 	// Mount the file system.
 	logger.Infof("Mounting file system %q...", fsName)
 
-	mountCfg := getFuseMountConfig(fsName, newConfig, mountConfig)
+	mountCfg := getFuseMountConfig(fsName, newConfig)
 	mfs, err = fuse.Mount(mountPoint, server, mountCfg)
 	if err != nil {
-		err = fmt.Errorf("Mount: %w", err)
+		err = fmt.Errorf("mount: %w", err)
 		return
 	}
 
 	return
 }
 
-func getFuseMountConfig(fsName string, newConfig *cfg.Config, mountConfig *config.MountConfig) *fuse.MountConfig {
+func getFuseMountConfig(fsName string, newConfig *cfg.Config) *fuse.MountConfig {
 	// Handle the repeated "-o" flag.
 	parsedOptions := make(map[string]string)
 	for _, o := range newConfig.FileSystem.FuseOptions {
@@ -174,7 +163,7 @@ func getFuseMountConfig(fsName string, newConfig *cfg.Config, mountConfig *confi
 		// users experience the performance gains. E.g. if a user workload tries to
 		// access two files under same directory parallely, then the lookups also
 		// happen parallely.
-		EnableParallelDirOps: !(mountConfig.FileSystemConfig.DisableParallelDirops),
+		EnableParallelDirOps: !(newConfig.FileSystem.DisableParallelDirops),
 	}
 
 	mountCfg.ErrorLogger = logger.NewLegacyLogger(logger.LevelError, "fuse: ")

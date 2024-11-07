@@ -19,8 +19,8 @@ import (
 	"log"
 	"os"
 	"path"
+	"strconv"
 	"testing"
-	"time"
 
 	"cloud.google.com/go/storage"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/cache/util"
@@ -61,16 +61,16 @@ const (
 	offsetForRangeReadWithin8MB            = 4 * util.MiB
 	offset10MiB                            = 10 * util.MiB
 	cacheCapacityForRangeReadTestInMiB     = 50
-	cacheDirName                           = "cache-dir"
 	logFileNameForMountedDirectoryTests    = "/tmp/gcsfuse_read_cache_test_logs/log.json"
 	parallelDownloadsPerFile               = 4
 	maxParallelDownloads                   = -1
-	downloadChunkSizeMB                    = 3
+	downloadChunkSizeMB                    = 4
 	enableCrcCheck                         = true
 )
 
 var (
 	testDirPath  string
+	cacheDirName string
 	cacheDirPath string
 	mountFunc    func([]string) error
 	// mount directory is where our tests run.
@@ -80,6 +80,16 @@ var (
 	storageClient *storage.Client
 	ctx           context.Context
 )
+
+type gcsfuseTestFlags struct {
+	cliFlags                []string
+	cacheSize               int64
+	cacheFileForRangeRead   bool
+	fileName                string
+	enableParallelDownloads bool
+	enableODirect           bool
+	cacheDirPath            string
+}
 
 ////////////////////////////////////////////////////////////////////////
 // Helpers
@@ -99,23 +109,28 @@ func mountGCSFuseAndSetupTestDir(flags []string, ctx context.Context, storageCli
 	testDirPath = client.SetupTestDirectory(ctx, storageClient, testDirName)
 }
 
-func createConfigFile(cacheSize int64, cacheFileForRangeRead bool, fileName string, enableParallelDownloads bool) string {
-	cacheDirPath = path.Join(setup.TestDir(), cacheDirName)
+func getDefaultCacheDirPathForTests() string {
+	return path.Join(setup.TestDir(), cacheDirName)
+}
+
+func createConfigFile(flags *gcsfuseTestFlags) string {
+	cacheDirPath = flags.cacheDirPath
 
 	// Set up config file for file cache.
 	mountConfig := map[string]interface{}{
 		"file-cache": map[string]interface{}{
-			"max-size-mb":                 cacheSize,
-			"cache-file-for-range-read":   cacheFileForRangeRead,
-			"enable-parallel-downloads":   enableParallelDownloads,
+			"max-size-mb":                 flags.cacheSize,
+			"cache-file-for-range-read":   flags.cacheFileForRangeRead,
+			"enable-parallel-downloads":   flags.enableParallelDownloads,
 			"parallel-downloads-per-file": parallelDownloadsPerFile,
 			"max-parallel-downloads":      maxParallelDownloads,
 			"download-chunk-size-mb":      downloadChunkSizeMB,
 			"enable-crc":                  enableCrcCheck,
+			"enable-o-direct":             flags.enableODirect,
 		},
 		"cache-dir": cacheDirPath,
 	}
-	filePath := setup.YAMLConfigFile(mountConfig, fileName)
+	filePath := setup.YAMLConfigFile(mountConfig, flags.fileName)
 	return filePath
 }
 
@@ -127,13 +142,15 @@ func TestMain(m *testing.M) {
 	setup.ParseSetUpFlags()
 
 	ctx = context.Background()
-	closeStorageClient := client.CreateStorageClientWithTimeOut(&ctx, &storageClient, time.Minute*15)
+	closeStorageClient := client.CreateStorageClientWithCancel(&ctx, &storageClient)
 	defer func() {
 		err := closeStorageClient()
 		if err != nil {
 			log.Fatalf("closeStorageClient failed: %v", err)
 		}
 	}()
+
+	cacheDirName = "cache-dir-read-cache-hns-" + strconv.FormatBool(setup.IsHierarchicalBucket(ctx, storageClient))
 
 	setup.ExitWithFailureIfBothTestBucketAndMountedDirectoryFlagsAreNotSet()
 

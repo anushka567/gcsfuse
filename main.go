@@ -21,12 +21,10 @@ package main
 
 import (
 	"log"
-	"os"
-	"strings"
 
-	"github.com/googlecloudplatform/gcsfuse/v2/cfg"
 	"github.com/googlecloudplatform/gcsfuse/v2/cmd"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/logger"
+	"github.com/googlecloudplatform/gcsfuse/v2/internal/perf"
 )
 
 func logPanic() {
@@ -37,48 +35,19 @@ func logPanic() {
 	}
 }
 
-// convertToPosixArgs converts a slice of commandline args and transforms them
-// into POSIX compliant args. All it does is that it converts flags specified
-// using a single-hyphen to double-hyphens. We are excluding "-v" because it's
-// reserved for showing version in Cobra.
-func convertToPosixArgs(args []string) []string {
-	pArgs := make([]string, 0, len(args))
-	for _, a := range args {
-		switch {
-		case a == "--v", a == "-v":
-			pArgs = append(pArgs, "-v")
-		case a == "--h", a == "-h":
-			pArgs = append(pArgs, "-h")
-		case strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--"):
-			pArgs = append(pArgs, "-"+a)
-		default:
-			pArgs = append(pArgs, a)
-		}
-	}
-	return pArgs
-}
-
 // Don't remove the comment below. It's used to generate config.go file
 // which is used for flag and config file parsing.
 // Refer https://go.dev/blog/generate for details.
 //
-//go:generate go run -C tools/config-gen . --paramsFile=params.yaml --outDir=../../cfg --templateDir=templates
+//go:generate go run -C tools/config-gen . --paramsFile=../../cfg/params.yaml --outDir=../../cfg --templateDir=templates
 func main() {
 	// Common configuration for all commands
 	defer logPanic()
 	// Make logging output better.
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
-	if strings.ToLower(os.Getenv("ENABLE_GCSFUSE_VIPER_CONFIG")) == "true" {
-		// TODO: implement the mount logic instead of simply returning nil.
-		rootCmd, err := cmd.NewRootCmd(func(*cfg.Config, string, string) error { return nil })
-		if err != nil {
-			log.Fatalf("Error occurred while creating the root command: %v", err)
-		}
-		rootCmd.SetArgs(convertToPosixArgs(os.Args))
-		if err := rootCmd.Execute(); err != nil {
-			log.Fatalf("Error occurred during command execution: %v", err)
-		}
-		return
-	}
-	cmd.ExecuteLegacyMain()
+	// Set up profiling handlers.
+	go perf.HandleCPUProfileSignals()
+	go perf.HandleMemoryProfileSignals()
+
+	cmd.ExecuteMountCmd()
 }

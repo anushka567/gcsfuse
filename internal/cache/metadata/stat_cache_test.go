@@ -18,9 +18,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/googlecloudplatform/gcsfuse/v2/cfg"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/cache/lru"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/cache/metadata"
-	"github.com/googlecloudplatform/gcsfuse/v2/internal/mount"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/storage/gcs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
@@ -117,7 +117,7 @@ type MultiBucketStatCacheTest struct {
 }
 
 func (t *StatCacheTest) SetupTest() {
-	cache := lru.NewCache(uint64((mount.AverageSizeOfPositiveStatCacheEntry + mount.AverageSizeOfNegativeStatCacheEntry) * capacity))
+	cache := lru.NewCache(uint64((cfg.AverageSizeOfPositiveStatCacheEntry + cfg.AverageSizeOfNegativeStatCacheEntry) * capacity))
 	t.cache.wrapped = metadata.NewStatCacheBucketView(cache, "") // this demonstrates
 	t.statCache = metadata.NewStatCacheBucketView(cache, "")     // this demonstrates
 	// that if you are using a cache for a single bucket, then
@@ -125,7 +125,7 @@ func (t *StatCacheTest) SetupTest() {
 }
 
 func (t *MultiBucketStatCacheTest) SetupTest() {
-	sharedCache := lru.NewCache(uint64((mount.AverageSizeOfPositiveStatCacheEntry + mount.AverageSizeOfNegativeStatCacheEntry) * capacity))
+	sharedCache := lru.NewCache(uint64((cfg.AverageSizeOfPositiveStatCacheEntry + cfg.AverageSizeOfNegativeStatCacheEntry) * capacity))
 	t.multiBucketCache.fruits = testHelperCache{wrapped: metadata.NewStatCacheBucketView(sharedCache, "fruits")}
 	t.multiBucketCache.spices = testHelperCache{wrapped: metadata.NewStatCacheBucketView(sharedCache, "spices")}
 }
@@ -419,7 +419,7 @@ func (t *MultiBucketStatCacheTest) Test_ExpiresLeastRecentlyUsed() {
 }
 
 func (t *StatCacheTest) Test_InsertFolderCreateEntryWhenNoEntryIsPresent() {
-	const name = "key1"
+	const name = "key1/"
 	newEntry := &gcs.Folder{
 		Name: name,
 	}
@@ -428,11 +428,11 @@ func (t *StatCacheTest) Test_InsertFolderCreateEntryWhenNoEntryIsPresent() {
 
 	hit, entry := t.statCache.LookUpFolder(name, someTime)
 	assert.True(t.T(), hit)
-	assert.Equal(t.T(), "key1", entry.Name)
+	assert.Equal(t.T(), name, entry.Name)
 }
 
 func (t *StatCacheTest) Test_InsertFolderOverrideEntryOldEntryIsAlreadyPresent() {
-	const name = "key1"
+	const name = "key1/"
 	existingEntry := &gcs.Folder{
 		Name: name,
 	}
@@ -445,11 +445,11 @@ func (t *StatCacheTest) Test_InsertFolderOverrideEntryOldEntryIsAlreadyPresent()
 
 	hit, entry := t.statCache.LookUpFolder(name, someTime)
 	assert.True(t.T(), hit)
-	assert.Equal(t.T(), "key1", entry.Name)
+	assert.Equal(t.T(), name, entry.Name)
 }
 
 func (t *StatCacheTest) Test_LookupReturnFalseIfExpirationIsPassed() {
-	const name = "key1"
+	const name = "key1/"
 	entry := &gcs.Folder{
 		Name: name,
 	}
@@ -462,7 +462,7 @@ func (t *StatCacheTest) Test_LookupReturnFalseIfExpirationIsPassed() {
 }
 
 func (t *StatCacheTest) Test_LookupReturnFalseWhenIsNotPresent() {
-	const name = "key1"
+	const name = "key1/"
 
 	hit, result := t.statCache.LookUpFolder(name, expiration.Add(time.Second))
 
@@ -471,7 +471,7 @@ func (t *StatCacheTest) Test_LookupReturnFalseWhenIsNotPresent() {
 }
 
 func (t *StatCacheTest) Test_InsertFolderShouldNotOverrideEntryIfMetagenerationIsOld() {
-	const name = "key1"
+	const name = "key1/"
 	existingEntry := &gcs.Folder{
 		Name: name,
 	}
@@ -484,11 +484,11 @@ func (t *StatCacheTest) Test_InsertFolderShouldNotOverrideEntryIfMetagenerationI
 
 	hit, entry := t.statCache.LookUpFolder(name, someTime)
 	assert.True(t.T(), hit)
-	assert.Equal(t.T(), "key1", entry.Name)
+	assert.Equal(t.T(), name, entry.Name)
 }
 
 func (t *StatCacheTest) Test_AddNegativeEntryForFolderShouldAddNegativeEntryForFolder() {
-	const name = "key1"
+	const name = "key1/"
 	existingEntry := &gcs.Folder{
 		Name: name,
 	}
@@ -497,11 +497,11 @@ func (t *StatCacheTest) Test_AddNegativeEntryForFolderShouldAddNegativeEntryForF
 	t.statCache.AddNegativeEntryForFolder(name, expiration)
 
 	hit, entry := t.statCache.LookUpFolder(name, someTime)
-	assert.False(t.T(), hit)
+	assert.True(t.T(), hit)
 	assert.Nil(t.T(), entry)
 }
 
-func (t *StatCacheTest) Test_ShouldReturnHitFalseWhenOnlyObjectAlreadyHasEntry() {
+func (t *StatCacheTest) Test_ShouldReturnHitTrueWhenOnlyObjectAlreadyHasEntry() {
 	const name = "key1"
 	existingEntry := &gcs.MinObject{
 		Name:           name,
@@ -511,7 +511,8 @@ func (t *StatCacheTest) Test_ShouldReturnHitFalseWhenOnlyObjectAlreadyHasEntry()
 
 	hit, entry := t.statCache.LookUpFolder(name, someTime)
 
-	assert.False(t.T(), hit)
+	// If "key1" object exist then corresponding folder entry will be nil, but hit will be true as key have entry in the cache for object.
+	assert.True(t.T(), hit)
 	assert.Nil(t.T(), entry)
 }
 
@@ -521,7 +522,7 @@ func (t *StatCacheTest) Test_ShouldEvictEntryOnFullCapacityIncludingFolderSize()
 	objectEntry1 := &gcs.MinObject{Name: "1"}
 	objectEntry2 := &gcs.MinObject{Name: "2"}
 	folderEntry := &gcs.Folder{
-		Name: "3",
+		Name: "3/",
 	}
 	t.statCache.Insert(objectEntry1, expiration) // adds size of 1428
 	t.statCache.Insert(objectEntry2, expiration) // adds size of 1428
@@ -538,14 +539,14 @@ func (t *StatCacheTest) Test_ShouldEvictEntryOnFullCapacityIncludingFolderSize()
 
 	hit1, entry1 = t.statCache.LookUp("1", someTime)
 	hit2, entry2 = t.statCache.LookUp("2", someTime)
-	hit3, entry3 := t.statCache.LookUpFolder("3", someTime)
+	hit3, entry3 := t.statCache.LookUpFolder("3/", someTime)
 
 	assert.False(t.T(), hit1)
 	assert.Nil(t.T(), entry1)
 	assert.True(t.T(), hit2)
 	assert.Equal(t.T(), "2", entry2.Name)
 	assert.True(t.T(), hit3)
-	assert.Equal(t.T(), "3", entry3.Name)
+	assert.Equal(t.T(), "3/", entry3.Name)
 }
 
 func (t *StatCacheTest) Test_ShouldEvictAllEntriesWithPrefixFolder() {

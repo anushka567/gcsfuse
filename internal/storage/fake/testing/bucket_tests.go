@@ -36,8 +36,8 @@ import (
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/storage/storageutil"
 	. "github.com/jacobsa/oglematchers"
 	. "github.com/jacobsa/ogletest"
-	"github.com/jacobsa/syncutil"
 	"github.com/jacobsa/timeutil"
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/sys/unix"
 )
 
@@ -248,7 +248,7 @@ func readMultiple(
 	ctx context.Context,
 	bucket gcs.Bucket,
 	reqs []*gcs.ReadObjectRequest) (contents [][]byte, errs []error) {
-	b := syncutil.NewBundle(ctx)
+	group, ctx := errgroup.WithContext(ctx)
 
 	// Feed indices into a channel.
 	indices := make(chan int, len(reqs))
@@ -286,7 +286,7 @@ func readMultiple(
 		// Close it.
 		err = rc.Close()
 		if err != nil {
-			err = fmt.Errorf("Close: %v", err)
+			err = fmt.Errorf("close: %v", err)
 			return
 		}
 	}
@@ -294,7 +294,7 @@ func readMultiple(
 	// Run several workers.
 	const parallelsim = 32
 	for i := 0; i < parallelsim; i++ {
-		b.Add(func(ctx context.Context) (err error) {
+		group.Go(func() (err error) {
 			for i := range indices {
 				handleRequest(ctx, i)
 			}
@@ -303,7 +303,7 @@ func readMultiple(
 		})
 	}
 
-	AssertEq(nil, b.Join())
+	AssertEq(nil, group.Wait())
 	return
 }
 
@@ -313,7 +313,7 @@ func forEachString(
 	ctx context.Context,
 	strings []string,
 	f func(context.Context, string) error) (err error) {
-	b := syncutil.NewBundle(ctx)
+	group, ctx := errgroup.WithContext(ctx)
 
 	// Feed strings into a channel.
 	c := make(chan string, len(strings))
@@ -325,7 +325,7 @@ func forEachString(
 	// Consume the strings.
 	const parallelism = 128
 	for i := 0; i < parallelism; i++ {
-		b.Add(func(ctx context.Context) (err error) {
+		group.Go(func() (err error) {
 			for s := range c {
 				err = f(ctx, s)
 				if err != nil {
@@ -336,7 +336,7 @@ func forEachString(
 		})
 	}
 
-	err = b.Join()
+	err = group.Wait()
 	return
 }
 
@@ -648,7 +648,7 @@ func (t *createTest) InterestingNames() {
 		func(ctx context.Context, name string) (err error) {
 			err = t.createObject(name, name)
 			if err != nil {
-				err = fmt.Errorf("Failed to create %q: %v", name, err)
+				err = fmt.Errorf("failed to create %q: %v", name, err)
 				return
 			}
 
@@ -666,13 +666,13 @@ func (t *createTest) InterestingNames() {
 			contents, err := t.readObject(name)
 
 			if err != nil {
-				err = fmt.Errorf("Failed to read %q: %v", name, err)
+				err = fmt.Errorf("failed to read %q: %v", name, err)
 				return
 			}
 
 			if contents != name {
 				err = fmt.Errorf(
-					"Incorrect contents for %q: %q",
+					"incorrect contents for %q: %q",
 					name,
 					contents)
 
@@ -733,19 +733,19 @@ func (t *createTest) IllegalNames() {
 		func(ctx context.Context, name string) (err error) {
 			err = t.createObject(name, "")
 			if err == nil {
-				err = fmt.Errorf("Expected to not be able to create %q", name)
+				err = fmt.Errorf("expected to not be able to create %q", name)
 				return
 			}
 
 			if name == "" {
-				if !strings.Contains(err.Error(), "Invalid") &&
-					!strings.Contains(err.Error(), "Required") {
-					err = fmt.Errorf("Unexpected error for %q: %v", name, err)
+				if !strings.Contains(err.Error(), "invalid") &&
+					!strings.Contains(err.Error(), "required") {
+					err = fmt.Errorf("unexpected error for %q: %v", name, err)
 					return
 				}
 			} else {
-				if !strings.Contains(err.Error(), "Invalid") {
-					err = fmt.Errorf("Unexpected error for %q: %v", name, err)
+				if !strings.Contains(err.Error(), "invalid") {
+					err = fmt.Errorf("unexpected error for %q: %v", name, err)
 					return
 				}
 			}
@@ -1459,7 +1459,7 @@ func (t *copyTest) InterestingNames() {
 				})
 
 			if err != nil {
-				err = fmt.Errorf("Failed to copy %q: %v", name, err)
+				err = fmt.Errorf("failed to copy %q: %v", name, err)
 				return
 			}
 
@@ -1490,19 +1490,19 @@ func (t *copyTest) IllegalNames() {
 				})
 
 			if err == nil {
-				err = fmt.Errorf("Expected to not be able to copy to %q", name)
+				err = fmt.Errorf("expected to not be able to copy to %q", name)
 				return
 			}
 
 			if name == "" {
-				if !strings.Contains(err.Error(), "Invalid") &&
-					!strings.Contains(err.Error(), "Not Found") {
-					err = fmt.Errorf("Unexpected error for %q: %v", name, err)
+				if !strings.Contains(err.Error(), "invalid") &&
+					!strings.Contains(err.Error(), "not Found") {
+					err = fmt.Errorf("unexpected error for %q: %v", name, err)
 					return
 				}
 			} else {
-				if !strings.Contains(err.Error(), "Invalid") {
-					err = fmt.Errorf("Unexpected error for %q: %v", name, err)
+				if !strings.Contains(err.Error(), "invalid") {
+					err = fmt.Errorf("unexpected error for %q: %v", name, err)
 					return
 				}
 			}
@@ -1659,11 +1659,11 @@ func (t *composeTest) createSources(
 	close(indices)
 
 	// Run a bunch of workers.
-	b := syncutil.NewBundle(t.ctx)
+	group, ctx := errgroup.WithContext(t.ctx)
 
 	const parallelism = 128
 	for i := 0; i < parallelism; i++ {
-		b.Add(func(ctx context.Context) (err error) {
+		group.Go(func() (err error) {
 			for i := range indices {
 				// Create an object. Include some metadata; it should be ignored by
 				// ComposeObjects.
@@ -1690,7 +1690,7 @@ func (t *composeTest) createSources(
 		})
 	}
 
-	err = b.Join()
+	err = group.Wait()
 	return
 }
 
@@ -2584,7 +2584,7 @@ func (t *composeTest) InterestingNames() {
 				})
 
 			if err != nil {
-				err = fmt.Errorf("Failed to compose to %q: %v", name, err)
+				err = fmt.Errorf("failed to compose to %q: %v", name, err)
 				return
 			}
 
@@ -2618,19 +2618,19 @@ func (t *composeTest) IllegalNames() {
 				})
 
 			if err == nil {
-				err = fmt.Errorf("Expected to not be able to compose to %q", name)
+				err = fmt.Errorf("expected to not be able to compose to %q", name)
 				return
 			}
 
 			if name == "" {
-				if !strings.Contains(err.Error(), "Invalid") &&
-					!strings.Contains(err.Error(), "Not Found") {
-					err = fmt.Errorf("Unexpected error for %q: %v", name, err)
+				if !strings.Contains(err.Error(), "invalid") &&
+					!strings.Contains(err.Error(), "not Found") {
+					err = fmt.Errorf("unexpected error for %q: %v", name, err)
 					return
 				}
 			} else {
-				if !strings.Contains(err.Error(), "Invalid") {
-					err = fmt.Errorf("Unexpected error for %q: %v", name, err)
+				if !strings.Contains(err.Error(), "invalid") {
+					err = fmt.Errorf("unexpected error for %q: %v", name, err)
 					return
 				}
 			}

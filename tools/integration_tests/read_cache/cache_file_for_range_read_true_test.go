@@ -17,6 +17,7 @@ package read_cache
 import (
 	"context"
 	"log"
+	"path"
 	"testing"
 	"time"
 
@@ -79,7 +80,7 @@ func (s *cacheFileForRangeReadTrueTest) TestRangeReadsWithCacheHit(t *testing.T)
 func TestCacheFileForRangeReadTrueTest(t *testing.T) {
 	ts := &cacheFileForRangeReadTrueTest{ctx: context.Background()}
 	// Create storage client before running tests.
-	closeStorageClient := client.CreateStorageClientWithTimeOut(&ts.ctx, &ts.storageClient, 15*time.Minute)
+	closeStorageClient := client.CreateStorageClientWithCancel(&ts.ctx, &ts.storageClient)
 	defer func() {
 		err := closeStorageClient()
 		if err != nil {
@@ -93,15 +94,73 @@ func TestCacheFileForRangeReadTrueTest(t *testing.T) {
 		return
 	}
 
-	// Define flag set to run the tests.
-	flagsSet := [][]string{
-		{"--implicit-dirs", "--config-file=" + createConfigFile(cacheCapacityForRangeReadTestInMiB, true, configFileName, false)},
-		{"--config-file=" + createConfigFile(cacheCapacityForRangeReadTestInMiB, true, configFileNameForParallelDownloadTests, true)},
-	}
+	// Run with cache directory pointing to RAM based dir
+	ramCacheDir := path.Join("/dev/shm", cacheDirName)
 
+	// Define flag set to run the tests.
+	flagsSet := []gcsfuseTestFlags{
+		{
+			cliFlags:                []string{"--implicit-dirs"},
+			cacheSize:               cacheCapacityForRangeReadTestInMiB,
+			cacheFileForRangeRead:   true,
+			fileName:                configFileName,
+			enableParallelDownloads: false,
+			enableODirect:           false,
+			cacheDirPath:            getDefaultCacheDirPathForTests(),
+		},
+		{
+			cliFlags:                nil,
+			cacheSize:               cacheCapacityForRangeReadTestInMiB,
+			cacheFileForRangeRead:   true,
+			fileName:                configFileNameForParallelDownloadTests,
+			enableParallelDownloads: true,
+			enableODirect:           false,
+			cacheDirPath:            getDefaultCacheDirPathForTests(),
+		},
+		{
+			cliFlags:                nil,
+			cacheSize:               cacheCapacityForRangeReadTestInMiB,
+			cacheFileForRangeRead:   true,
+			fileName:                configFileNameForParallelDownloadTests,
+			enableParallelDownloads: true,
+			enableODirect:           false,
+			cacheDirPath:            ramCacheDir,
+		},
+		{
+			cliFlags:                nil,
+			cacheSize:               cacheCapacityForRangeReadTestInMiB,
+			cacheFileForRangeRead:   true,
+			fileName:                configFileNameForParallelDownloadTests,
+			enableParallelDownloads: true,
+			enableODirect:           true,
+			cacheDirPath:            getDefaultCacheDirPathForTests(),
+		},
+		{
+			cliFlags:                nil,
+			cacheSize:               cacheCapacityForRangeReadTestInMiB,
+			cacheFileForRangeRead:   true,
+			fileName:                configFileNameForParallelDownloadTests,
+			enableParallelDownloads: true,
+			enableODirect:           true,
+			cacheDirPath:            ramCacheDir,
+		},
+		{
+			cliFlags:                nil,
+			cacheSize:               cacheCapacityForRangeReadTestInMiB,
+			cacheFileForRangeRead:   true,
+			fileName:                configFileName,
+			enableParallelDownloads: false,
+			enableODirect:           false,
+			cacheDirPath:            ramCacheDir,
+		},
+	}
 	// Run tests.
 	for _, flags := range flagsSet {
-		ts.flags = flags
+		configFilePath := createConfigFile(&flags)
+		ts.flags = []string{"--config-file=" + configFilePath}
+		if flags.cliFlags != nil {
+			ts.flags = append(ts.flags, flags.cliFlags...)
+		}
 		log.Printf("Running tests with flags: %s", ts.flags)
 		test_setup.RunTests(t, ts)
 	}

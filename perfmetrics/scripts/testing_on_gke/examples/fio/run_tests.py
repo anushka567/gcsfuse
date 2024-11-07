@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 # Copyright 2018 The Kubernetes Authors.
-# Copyright 2022 Google LLC
+# Copyright 2024 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,46 +15,102 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Generates and deploys helm charts for FIO workloads.
+
+This program takes in a json test-config file, finds out valid FIO workloads in
+it and generates and deploys a helm chart for each valid FIO workload.
+"""
+
+# system imports
+import argparse
+import os
 import subprocess
+import sys
+
+# local imports from other directories
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'utils'))
+from run_tests_common import escape_commas_in_string, parse_args, run_command, add_iam_role_for_buckets
+from utils import UnknownMachineTypeError, resource_limits
+
+# local imports from same directory
+import fio_workload
 
 
-def run_command(command: str):
-  result = subprocess.run(command.split(" "), capture_output=True, text=True)
-  print(result.stdout)
-  print(result.stderr)
+def createHelmInstallCommands(
+    fioWorkloads: set,
+    instanceId: str,
+    machineType: str,
+) -> list:
+  """Creates helm install commands for the given fioWorkload objects."""
+  helm_commands = []
+  try:
+    resourceLimits, resourceRequests = resource_limits(machineType)
+  except UnknownMachineTypeError:
+    print(
+        f'Found unknown machine-type: {machineType}, defaulting resource limits'
+        ' to cpu=0,memory=0'
+    )
+    resourceLimits = {'cpu': 0, 'memory': '0'}
+    resourceRequests = resourceLimits
 
-
-bucketName_fileSize_blockSize = [
-    ("gke-fio-64k-1m", "64K", "64K"),
-    ("gke-fio-128k-1m", "128K", "128K"),
-    ("gke-fio-1mb-1m", "1M", "256K"),
-    ("gke-fio-100mb-50k", "100M", "1M"),
-    ("gke-fio-200gb-1", "200G", "1M"),
-]
-
-scenarios = ["gcsfuse-file-cache", "gcsfuse-no-file-cache", "local-ssd"]
-
-for bucketName, fileSize, blockSize in bucketName_fileSize_blockSize:
-  for readType in ["read", "randread"]:
-    for scenario in scenarios:
-      if readType == "randread" and fileSize in ["64K", "128K"]:
-        continue
-
+  for fioWorkload in fioWorkloads:
+    for readType in fioWorkload.readTypes:
+      chartName, podName, outputDirPrefix = fio_workload.FioChartNamePodName(
+          fioWorkload, instanceId, readType
+      )
       commands = [
+          f'helm install {chartName} loading-test',
+          f'--set bucketName={fioWorkload.bucket}',
+          f'--set scenario={fioWorkload.scenario}',
+          f'--set fio.readType={readType}',
+          f'--set fio.fileSize={fioWorkload.fileSize}',
+          f'--set fio.blockSize={fioWorkload.blockSize}',
+          f'--set fio.filesPerThread={fioWorkload.filesPerThread}',
+          f'--set fio.numThreads={fioWorkload.numThreads}',
+          f'--set instanceId={instanceId}',
           (
-              "helm install"
-              f" fio-loading-test-{fileSize.lower()}-{readType}-{scenario} loading-test"
+              '--set'
+              f' gcsfuse.mountOptions={escape_commas_in_string(fioWorkload.gcsfuseMountOptions)}'
           ),
-          f"--set bucketName={bucketName}",
-          f"--set scenario={scenario}",
-          f"--set fio.readType={readType}",
-          f"--set fio.fileSize={fileSize}",
-          f"--set fio.blockSize={blockSize}",
+          f'--set nodeType={machineType}',
+          f'--set podName={podName}',
+          f'--set outputDirPrefix={outputDirPrefix}',
+          f"--set resourceLimits.cpu={resourceLimits['cpu']}",
+          f"--set resourceLimits.memory={resourceLimits['memory']}",
+          f"--set resourceRequests.cpu={resourceRequests['cpu']}",
+          f"--set resourceRequests.memory={resourceRequests['memory']}",
       ]
 
-      if fileSize == "100M":
-        commands.append("--set fio.filesPerThread=1000")
+      helm_command = ' '.join(commands)
+      helm_commands.append(helm_command)
+  return helm_commands
 
-      helm_command = " ".join(commands)
 
-      run_command(helm_command)
+def main(args) -> None:
+  fioWorkloads = fio_workload.ParseTestConfigForFioWorkloads(
+      args.workload_config
+  )
+  helmInstallCommands = createHelmInstallCommands(
+      fioWorkloads,
+      args.instance_id,
+      args.machine_type,
+  )
+  buckets = (fioWorkload.bucket for fioWorkload in fioWorkloads)
+  role = 'roles/storage.objectUser'
+  add_iam_role_for_buckets(
+      buckets,
+      role,
+      args.project_id,
+      args.project_number,
+      args.namespace,
+      args.ksa,
+  )
+  for helmInstallCommand in helmInstallCommands:
+    print(f'{helmInstallCommand}')
+    if not args.dry_run:
+      run_command(helmInstallCommand)
+
+
+if __name__ == '__main__':
+  args = parse_args()
+  main(args)

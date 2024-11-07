@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/cache/metadata"
-	"github.com/googlecloudplatform/gcsfuse/v2/internal/config"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/storage"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/storage/gcs"
 	"github.com/jacobsa/fuse/fuseops"
@@ -61,10 +60,10 @@ func (t *HNSDirTest) SetupTest() {
 }
 
 func (t *HNSDirTest) resetDirInode(implicitDirs, enableNonexistentTypeCache, enableManagedFoldersListing bool) {
-	t.resetDirInodeWithTypeCacheConfigs(implicitDirs, enableNonexistentTypeCache, enableManagedFoldersListing, config.DefaultTypeCacheMaxSizeMB, typeCacheTTL)
+	t.resetDirInodeWithTypeCacheConfigs(implicitDirs, enableNonexistentTypeCache, enableManagedFoldersListing, 4, typeCacheTTL)
 }
 
-func (t *HNSDirTest) resetDirInodeWithTypeCacheConfigs(implicitDirs, enableNonexistentTypeCache, enableManagedFoldersListing bool, typeCacheMaxSizeMB int, typeCacheTTL time.Duration) {
+func (t *HNSDirTest) resetDirInodeWithTypeCacheConfigs(implicitDirs, enableNonexistentTypeCache, enableManagedFoldersListing bool, typeCacheMaxSizeMB int64, typeCacheTTL time.Duration) {
 	t.fixedTime.SetTime(time.Date(2024, 7, 22, 2, 15, 0, 0, time.Local))
 
 	t.in = NewDirInode(
@@ -93,6 +92,27 @@ func (t *HNSDirTest) resetDirInodeWithTypeCacheConfigs(implicitDirs, enableNonex
 
 	//Lock dir Inode
 	t.in.Lock()
+}
+
+func (t *HNSDirTest) createDirInode(dirInodeName string) DirInode {
+	return NewDirInode(
+		5,
+		NewDirName(NewRootName(""), dirInodeName),
+		fuseops.InodeAttributes{
+			Uid:  uid,
+			Gid:  gid,
+			Mode: dirMode,
+		},
+		false,
+		false,
+		true,
+		typeCacheTTL,
+		&t.bucket,
+		&t.fixedTime,
+		&t.fixedTime,
+		4,
+		false,
+	)
 }
 
 func (t *HNSDirTest) TearDownTest() {
@@ -301,10 +321,11 @@ func (t *HNSDirTest) TestRenameFolderWithNonExistentSourceFolder() {
 
 func (t *HNSDirTest) TestDeleteChildDir_WhenImplicitDirFlagTrueOnNonHNSBucket() {
 	const folderName = "folder"
-	t.mockBucket.On("BucketType").Return(gcs.NonHierarchical)
+	dirName := path.Join(dirInodeName, folderName) + "/"
+	dirIn := t.createDirInode(dirName)
 
 	// Delete dir
-	err := t.in.DeleteChildDir(t.ctx, folderName, true)
+	err := t.in.DeleteChildDir(t.ctx, folderName, true, dirIn)
 
 	t.mockBucket.AssertExpectations(t.T()) // Verify mock interactions
 	assert.NoError(t.T(), err)             // Ensure no error occurred
@@ -319,12 +340,14 @@ func (t *HNSDirTest) TestDeleteChildDir_WhenImplicitDirFlagFalseAndNonHNSBucket_
 	}
 	t.mockBucket.On("BucketType").Return(gcs.NonHierarchical)
 	t.mockBucket.On("DeleteObject", t.ctx, &deleteObjectReq).Return(nil)
+	dirIn := t.createDirInode(dirName)
 
-	err := t.in.DeleteChildDir(t.ctx, name, false)
+	err := t.in.DeleteChildDir(t.ctx, name, false, dirIn)
 
 	t.mockBucket.AssertExpectations(t.T())
 	assert.NoError(t.T(), err)
 	assert.Equal(t.T(), metadata.Type(0), t.typeCache.Get(t.fixedTime.Now(), dirName))
+	assert.False(t.T(), dirIn.IsUnlinked())
 }
 func (t *HNSDirTest) TestDeleteChildDir_WithImplicitDirFlagFalseAndNonHNSBucket_DeleteObjectThrowAnError() {
 	const name = "folder"
@@ -335,12 +358,14 @@ func (t *HNSDirTest) TestDeleteChildDir_WithImplicitDirFlagFalseAndNonHNSBucket_
 	}
 	t.mockBucket.On("BucketType").Return(gcs.NonHierarchical)
 	t.mockBucket.On("DeleteObject", t.ctx, &deleteObjectReq).Return(fmt.Errorf("mock error"))
+	dirIn := t.createDirInode(dirName)
 
 	// Delete dir .
-	err := t.in.DeleteChildDir(t.ctx, name, false)
+	err := t.in.DeleteChildDir(t.ctx, name, false, dirIn)
 
 	t.mockBucket.AssertExpectations(t.T())
 	assert.NotNil(t.T(), err)
+	assert.False(t.T(), dirIn.IsUnlinked())
 }
 
 func (t *HNSDirTest) TestDeleteChildDir_WithImplicitDirFlagFalseAndBucketTypeIsHNS_DeleteObjectGiveSuccessDeleteFolderThrowAnError() {
@@ -353,12 +378,14 @@ func (t *HNSDirTest) TestDeleteChildDir_WithImplicitDirFlagFalseAndBucketTypeIsH
 	t.mockBucket.On("BucketType").Return(gcs.Hierarchical)
 	t.mockBucket.On("DeleteObject", t.ctx, &deleteObjectReq).Return(nil)
 	t.mockBucket.On("DeleteFolder", t.ctx, dirName).Return(fmt.Errorf("mock error"))
+	dirIn := t.createDirInode(dirName)
 
 	// Delete dir .
-	err := t.in.DeleteChildDir(t.ctx, name, false)
+	err := t.in.DeleteChildDir(t.ctx, name, false, dirIn)
 
 	t.mockBucket.AssertExpectations(t.T())
 	assert.NotNil(t.T(), err)
+	assert.False(t.T(), dirIn.IsUnlinked())
 }
 
 func (t *HNSDirTest) TestDeleteChildDir_WithImplicitDirFlagFalseAndBucketTypeIsHNS_DeleteObjectThrowAnErrorDeleteFolderGiveSuccess() {
@@ -371,13 +398,15 @@ func (t *HNSDirTest) TestDeleteChildDir_WithImplicitDirFlagFalseAndBucketTypeIsH
 	t.mockBucket.On("BucketType").Return(gcs.Hierarchical)
 	t.mockBucket.On("DeleteObject", t.ctx, &deleteObjectReq).Return(fmt.Errorf("mock error"))
 	t.mockBucket.On("DeleteFolder", t.ctx, dirName).Return(nil)
+	dirIn := t.createDirInode(dirName)
 
 	// Delete dir .
-	err := t.in.DeleteChildDir(t.ctx, name, false)
+	err := t.in.DeleteChildDir(t.ctx, name, false, dirIn)
 
 	t.mockBucket.AssertExpectations(t.T())
 	assert.NoError(t.T(), err)
 	assert.Equal(t.T(), metadata.Type(0), t.typeCache.Get(t.fixedTime.Now(), dirName))
+	assert.True(t.T(), dirIn.IsUnlinked())
 }
 
 func (t *HNSDirTest) TestDeleteChildDir_WithImplicitDirFlagFalseAndBucketTypeIsHNS_DeleteObjectAndDeleteFolderThrowAnError() {
@@ -390,14 +419,16 @@ func (t *HNSDirTest) TestDeleteChildDir_WithImplicitDirFlagFalseAndBucketTypeIsH
 	t.mockBucket.On("BucketType").Return(gcs.Hierarchical)
 	t.mockBucket.On("DeleteObject", t.ctx, &deleteObjectReq).Return(fmt.Errorf("mock error"))
 	t.mockBucket.On("DeleteFolder", t.ctx, dirName).Return(fmt.Errorf("mock delete folder error"))
+	dirIn := t.createDirInode(dirName)
 
 	// Delete dir .
-	err := t.in.DeleteChildDir(t.ctx, name, false)
+	err := t.in.DeleteChildDir(t.ctx, name, false, dirIn)
 
 	t.mockBucket.AssertExpectations(t.T())
 	assert.NotNil(t.T(), err)
 	// It will ignore the error that came from deleteObject.
 	assert.Equal(t.T(), err.Error(), "DeleteFolder: mock delete folder error")
+	assert.False(t.T(), dirIn.IsUnlinked())
 }
 
 func (t *HNSDirTest) TestCreateChildDirWhenBucketTypeIsHNSWithFailure() {

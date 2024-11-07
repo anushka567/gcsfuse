@@ -21,7 +21,6 @@ import (
 	"os"
 	"path"
 	"testing"
-	"time"
 
 	"cloud.google.com/go/storage"
 	"github.com/googlecloudplatform/gcsfuse/v2/tools/integration_tests/util/client"
@@ -42,12 +41,22 @@ var (
 	ctx           context.Context
 )
 
+func setupTestDir(dirName string) string {
+	dir := setup.SetupTestDirectory(DirForImplicitDirTests)
+	dirPath := path.Join(dir, dirName)
+	err := os.Mkdir(dirPath, setup.DirPermission_0755)
+	if err != nil {
+		log.Fatalf("Error while setting up directory %s for testing: %v", dirPath, err)
+	}
+
+	return dirPath
+}
 func TestMain(m *testing.M) {
 	setup.ParseSetUpFlags()
 
 	// Create storage client before running tests.
 	ctx = context.Background()
-	closeStorageClient := client.CreateStorageClientWithTimeOut(&ctx, &storageClient, time.Minute*15)
+	closeStorageClient := client.CreateStorageClientWithCancel(&ctx, &storageClient)
 	defer func() {
 		err := closeStorageClient()
 		if err != nil {

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 # Copyright 2018 The Kubernetes Authors.
-# Copyright 2022 Google LLC
+# Copyright 2024 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,43 +15,101 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Generates and deploys helm charts for DLIO workloads.
+
+This program takes in a json test-config file, finds out valid
+DLIO workloads from it and generates and deploys a helm chart for
+each valid DLIO workload.
+"""
+
+# system imports
+import argparse
+import os
 import subprocess
+import sys
+
+# local imports from other directories
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'utils'))
+from run_tests_common import escape_commas_in_string, parse_args, run_command, add_iam_role_for_buckets
+from utils import UnknownMachineTypeError, resource_limits
+
+# local imports from same directory
+import dlio_workload
 
 
-def run_command(command: str):
-  result = subprocess.run(command.split(" "), capture_output=True, text=True)
-  print(result.stdout)
-  print(result.stderr)
+def createHelmInstallCommands(
+    dlioWorkloads: set,
+    instanceId: str,
+    machineType: str,
+) -> list:
+  """Creates helm install commands for the given dlioWorkload objects."""
+  helm_commands = []
+  try:
+    resourceLimits, resourceRequests = resource_limits(machineType)
+  except UnknownMachineTypeError:
+    print(
+        f'Found unknown machine-type: {machineType}, defaulting resource limits'
+        ' to cpu=0,memory=0'
+    )
+    resourceLimits = {'cpu': 0, 'memory': '0'}
+    resourceRequests = resourceLimits
+
+  for dlioWorkload in dlioWorkloads:
+    for batchSize in dlioWorkload.batchSizes:
+      chartName, podName, outputDirPrefix = dlio_workload.DlioChartNamePodName(
+          dlioWorkload, instanceId, batchSize
+      )
+      commands = [
+          f'helm install {chartName} unet3d-loading-test',
+          f'--set bucketName={dlioWorkload.bucket}',
+          f'--set scenario={dlioWorkload.scenario}',
+          f'--set dlio.numFilesTrain={dlioWorkload.numFilesTrain}',
+          f'--set dlio.recordLength={dlioWorkload.recordLength}',
+          f'--set dlio.batchSize={batchSize}',
+          f'--set instanceId={instanceId}',
+          (
+              '--set'
+              f' gcsfuse.mountOptions={escape_commas_in_string(dlioWorkload.gcsfuseMountOptions)}'
+          ),
+          f'--set nodeType={machineType}',
+          f'--set podName={podName}',
+          f'--set outputDirPrefix={outputDirPrefix}',
+          f"--set resourceLimits.cpu={resourceLimits['cpu']}",
+          f"--set resourceLimits.memory={resourceLimits['memory']}",
+          f"--set resourceRequests.cpu={resourceRequests['cpu']}",
+          f"--set resourceRequests.memory={resourceRequests['memory']}",
+      ]
+
+      helm_command = ' '.join(commands)
+      helm_commands.append(helm_command)
+  return helm_commands
 
 
-metadataCacheTtlSecs = 6048000
-bucketName_numFilesTrain_recordLength_batchSize = [
-    ("gke-dlio-unet3d-100kb-500k", 500000, 102400, 800),
-    ("gke-dlio-unet3d-100kb-500k", 500000, 102400, 128),
-    ("gke-dlio-unet3d-500kb-1m", 1000000, 512000, 800),
-    ("gke-dlio-unet3d-500kb-1m", 1000000, 512000, 128),
-    ("gke-dlio-unet3d-3mb-100k", 100000, 3145728, 200),
-    ("gke-dlio-unet3d-150mb-5k", 5000, 157286400, 4),
-]
+def main(args) -> None:
+  dlioWorkloads = dlio_workload.ParseTestConfigForDlioWorkloads(
+      args.workload_config
+  )
+  helmInstallCommands = createHelmInstallCommands(
+      dlioWorkloads,
+      args.instance_id,
+      args.machine_type,
+  )
+  buckets = [dlioWorkload.bucket for dlioWorkload in dlioWorkloads]
+  role = 'roles/storage.objectUser'
+  add_iam_role_for_buckets(
+      buckets,
+      role,
+      args.project_id,
+      args.project_number,
+      args.namespace,
+      args.ksa,
+  )
+  for helmInstallCommand in helmInstallCommands:
+    print(f'{helmInstallCommand}')
+    if not args.dry_run:
+      run_command(helmInstallCommand)
 
-scenarios = ["gcsfuse-file-cache", "gcsfuse-no-file-cache", "local-ssd"]
 
-for (
-    bucketName,
-    numFilesTrain,
-    recordLength,
-    batchSize,
-) in bucketName_numFilesTrain_recordLength_batchSize:
-  for scenario in scenarios:
-    commands = [
-        f"helm install {bucketName}-{batchSize}-{scenario} unet3d-loading-test",
-        f"--set bucketName={bucketName}",
-        f"--set scenario={scenario}",
-        f"--set dlio.numFilesTrain={numFilesTrain}",
-        f"--set dlio.recordLength={recordLength}",
-        f"--set dlio.batchSize={batchSize}",
-    ]
-
-    helm_command = " ".join(commands)
-
-    run_command(helm_command)
+if __name__ == '__main__':
+  args = parse_args()
+  main(args)

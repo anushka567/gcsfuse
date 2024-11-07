@@ -22,7 +22,6 @@ import (
 	"os"
 	"path"
 	"testing"
-	"time"
 
 	"cloud.google.com/go/storage"
 	"github.com/googlecloudplatform/gcsfuse/v2/tools/integration_tests/util/client"
@@ -36,8 +35,9 @@ const (
 	logDirName         = "gcsfuse_integration_test_logs"
 	maxFileSizeMB      = 2
 	activeLogFileCount = 1
+	stderrLogFileCount = 1
 	backupLogFileCount = 2
-	logFileCount       = activeLogFileCount + backupLogFileCount
+	logFileCount       = activeLogFileCount + backupLogFileCount + stderrLogFileCount // Adding 1 for stderr logs file
 )
 
 var (
@@ -69,7 +69,7 @@ func TestMain(m *testing.M) {
 
 	var storageClient *storage.Client
 	ctx := context.Background()
-	closeStorageClient := client.CreateStorageClientWithTimeOut(&ctx, &storageClient, time.Minute*15)
+	closeStorageClient := client.CreateStorageClientWithCancel(&ctx, &storageClient)
 	defer func() {
 		err := closeStorageClient()
 		if err != nil {

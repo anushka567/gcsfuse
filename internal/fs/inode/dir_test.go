@@ -25,7 +25,6 @@ import (
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/util"
 
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/cache/metadata"
-	"github.com/googlecloudplatform/gcsfuse/v2/internal/config"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/contentcache"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/storage/fake"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/storage/gcs"
@@ -92,13 +91,13 @@ func (p DirentSlice) Less(i, j int) bool { return p[i].Name < p[j].Name }
 func (p DirentSlice) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }
 
 // NOTE: A limitation in the fake bucket's API prevents the direct creation of managed folders.
-// This poses a challenge for writing unit tests for enableManagedFoldersListing.
+// This poses a challenge for writing unit tests for includeFoldersAsPrefixes.
 
 func (t *DirTest) resetInode(implicitDirs, enableNonexistentTypeCache, enableManagedFoldersListing bool) {
-	t.resetInodeWithTypeCacheConfigs(implicitDirs, enableNonexistentTypeCache, enableManagedFoldersListing, config.DefaultTypeCacheMaxSizeMB, typeCacheTTL)
+	t.resetInodeWithTypeCacheConfigs(implicitDirs, enableNonexistentTypeCache, enableManagedFoldersListing, 4, typeCacheTTL)
 }
 
-func (t *DirTest) resetInodeWithTypeCacheConfigs(implicitDirs, enableNonexistentTypeCache, enableManagedFoldersListing bool, typeCacheMaxSizeMB int, typeCacheTTL time.Duration) {
+func (t *DirTest) resetInodeWithTypeCacheConfigs(implicitDirs, enableNonexistentTypeCache, enableManagedFoldersListing bool, typeCacheMaxSizeMB int64, typeCacheTTL time.Duration) {
 	if t.in != nil {
 		t.in.Unlock()
 	}
@@ -128,6 +127,27 @@ func (t *DirTest) resetInodeWithTypeCacheConfigs(implicitDirs, enableNonexistent
 	AssertNe(nil, t.tc)
 
 	t.in.Lock()
+}
+
+func (t *DirTest) createDirInode(dirInodeName string) DirInode {
+	return NewDirInode(
+		5,
+		NewDirName(NewRootName(""), dirInodeName),
+		fuseops.InodeAttributes{
+			Uid:  uid,
+			Gid:  gid,
+			Mode: dirMode,
+		},
+		false,
+		false,
+		true,
+		typeCacheTTL,
+		&t.bucket,
+		&t.clock,
+		&t.clock,
+		4,
+		false,
+	)
 }
 
 func (t *DirTest) getTypeFromCache(name string) metadata.Type {
@@ -656,10 +676,10 @@ func (t *DirTest) LookUpChild_NonExistentTypeCache_ImplicitDirsEnabled() {
 
 func (t *DirTest) LookUpChild_TypeCacheEnabled() {
 	inputs := []struct {
-		typeCacheMaxSizeMB int
+		typeCacheMaxSizeMB int64
 		typeCacheTTL       time.Duration
 	}{{
-		typeCacheMaxSizeMB: config.DefaultTypeCacheMaxSizeMB,
+		typeCacheMaxSizeMB: 4,
 		typeCacheTTL:       time.Second,
 	}, {
 		typeCacheMaxSizeMB: -1,
@@ -689,13 +709,13 @@ func (t *DirTest) LookUpChild_TypeCacheEnabled() {
 
 func (t *DirTest) LookUpChild_TypeCacheDisabled() {
 	inputs := []struct {
-		typeCacheMaxSizeMB int
+		typeCacheMaxSizeMB int64
 		typeCacheTTL       time.Duration
 	}{{
 		typeCacheMaxSizeMB: 0,
 		typeCacheTTL:       time.Second,
 	}, {
-		typeCacheMaxSizeMB: config.DefaultTypeCacheMaxSizeMB,
+		typeCacheMaxSizeMB: 4,
 		typeCacheTTL:       0,
 	}}
 
@@ -1378,7 +1398,7 @@ func (t *DirTest) DeleteChildFile_TypeCaching() {
 func (t *DirTest) DeleteChildDir_DoesntExist() {
 	const name = "qux"
 
-	err := t.in.DeleteChildDir(t.ctx, name, false)
+	err := t.in.DeleteChildDir(t.ctx, name, false, nil)
 	ExpectEq(nil, err)
 }
 
@@ -1392,38 +1412,59 @@ func (t *DirTest) DeleteChildDir_Exists() {
 	_, err = storageutil.CreateObject(t.ctx, t.bucket, objName, []byte("taco"))
 	AssertEq(nil, err)
 
+	dirIn := t.createDirInode(objName)
 	// Call the inode.
-	err = t.in.DeleteChildDir(t.ctx, name, false)
+	err = t.in.DeleteChildDir(t.ctx, name, false, dirIn)
 	AssertEq(nil, err)
 
 	// Check the bucket.
 	_, err = storageutil.ReadObject(t.ctx, t.bucket, objName)
 	var notFoundErr *gcs.NotFoundError
 	ExpectTrue(errors.As(err, &notFoundErr))
+	ExpectFalse(dirIn.IsUnlinked())
 }
 
 func (t *DirTest) DeleteChildDir_ImplicitDirTrue() {
 	const name = "qux"
+	objName := path.Join(dirInodeName, name) + "/"
 
-	err := t.in.DeleteChildDir(t.ctx, name, true)
+	dirIn := t.createDirInode(objName)
+	err := t.in.DeleteChildDir(t.ctx, name, true, dirIn)
+
 	ExpectEq(nil, err)
+	ExpectFalse(dirIn.IsUnlinked())
 }
 
-func (t *DirTest) CreateLocalChildFile_ShouldnotCreateObjectInGCS() {
-	const name = "qux"
-
-	// Create the local file inode.
-	core, err := t.in.CreateLocalChildFile(name)
+func (t *DirTest) LocalChildFileCore() {
+	core, err := t.in.CreateLocalChildFileCore("qux")
 
 	AssertEq(nil, err)
-	AssertEq(true, core.Local)
+	AssertEq(t.bucket.Name(), core.Bucket.Name())
+	AssertEq("foo/bar/qux", core.FullName.objectName)
+	AssertTrue(core.Local)
 	AssertEq(nil, core.MinObject)
-
-	// Object shouldn't get created in GCS.
-	result, err := t.in.LookUpChild(t.ctx, name)
+	result, err := t.in.LookUpChild(t.ctx, "qux")
 	AssertEq(nil, err)
 	AssertEq(nil, result)
-	ExpectEq(metadata.UnknownType, t.getTypeFromCache(name))
+	ExpectEq(metadata.UnknownType, t.getTypeFromCache("qux"))
+}
+
+func (t *DirTest) InsertIntoTypeCache() {
+	t.in.InsertFileIntoTypeCache("abc")
+
+	d := t.in.(*dirInode)
+	tp := t.tc.Get(d.cacheClock.Now(), "abc")
+	AssertEq(2, tp)
+}
+
+func (t *DirTest) EraseFromTypeCache() {
+	t.in.InsertFileIntoTypeCache("abc")
+
+	t.in.EraseFromTypeCache("abc")
+
+	d := t.in.(*dirInode)
+	tp := d.cache.Get(d.cacheClock.Now(), "abc")
+	AssertEq(0, tp)
 }
 
 func (t *DirTest) LocalFileEntriesEmpty() {

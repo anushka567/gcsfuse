@@ -18,7 +18,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math/rand"
 	"os"
 	"os/signal"
@@ -31,7 +30,6 @@ import (
 	"time"
 
 	"github.com/googlecloudplatform/gcsfuse/v2/cfg"
-	"github.com/googlecloudplatform/gcsfuse/v2/internal/config"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/fs"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/gcsx"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/locker"
@@ -156,13 +154,16 @@ func (t *fsTest) SetUpTestSuite() {
 	}
 	t.serverCfg.RenameDirLimit = RenameDirLimit
 	t.serverCfg.SequentialReadSizeMb = SequentialReadSizeMb
-	if t.serverCfg.MountConfig == nil {
-		t.serverCfg.MountConfig = config.NewMountConfig()
-	}
 
 	if t.serverCfg.NewConfig == nil {
 		t.serverCfg.NewConfig = &cfg.Config{
 			FileCache: defaultFileCacheConfig(),
+			MetadataCache: cfg.MetadataCacheConfig{
+				// Setting default values.
+				StatCacheMaxSizeMb: 32,
+				TtlSecs:            60,
+				TypeCacheMaxSizeMb: 4,
+			},
 		}
 	}
 
@@ -175,7 +176,7 @@ func (t *fsTest) SetUpTestSuite() {
 	t.serverCfg.DirPerms = dirPerms
 
 	// Set up a temporary directory for mounting.
-	mntDir, err = ioutil.TempDir("", "fs_test")
+	mntDir, err = os.MkdirTemp("", "fs_test")
 	AssertEq(nil, err)
 
 	// Create a file system server.

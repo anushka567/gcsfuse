@@ -27,6 +27,8 @@ import (
 	"testing"
 
 	"cloud.google.com/go/storage"
+	control "cloud.google.com/go/storage/control/apiv2"
+	"github.com/googlecloudplatform/gcsfuse/v2/tools/integration_tests/util/client"
 	"github.com/googlecloudplatform/gcsfuse/v2/tools/integration_tests/util/operations"
 	"github.com/googlecloudplatform/gcsfuse/v2/tools/integration_tests/util/setup"
 )
@@ -37,12 +39,13 @@ const (
 	ManagedFolder1                                        = "managedFolder1"
 	ManagedFolder2                                        = "managedFolder2"
 	SimulatedFolderNonEmptyManagedFoldersTest             = "simulatedFolderNonEmptyManagedFoldersTes"
-	FileInNonEmptyManagedFoldersTest                      = "testFileInNonEmptyManagedFoldersTest"
 	IAMRoleForViewPermission                              = "roles/storage.objectViewer"
 	NumberOfObjectsInDirForNonEmptyManagedFoldersListTest = 4
 	AdminPermission                                       = "objectAdmin"
 	IAMRoleForAdminPermission                             = "roles/storage.objectAdmin"
 )
+
+var FileInNonEmptyManagedFoldersTest = "testFileInNonEmptyManagedFoldersTest" + setup.GenerateRandomString(5)
 
 type IAMPolicy struct {
 	Bindings []struct {
@@ -73,17 +76,21 @@ func providePermissionToManagedFolder(bucket, managedFolderPath, serviceAccount,
 		t.Fatalf(fmt.Sprintf("Error in marshal the data into JSON format: %v", err))
 	}
 
-	localIAMPolicyFilePath := path.Join(os.Getenv("HOME"), "iam_policy.json")
+	f, err := os.CreateTemp(os.TempDir(), "iam-policy-*.json")
+	if err != nil {
+		t.Fatalf("error in creating file for iam-policy : %v", err)
+	}
+	defer operations.RemoveFile(f.Name())
 	// Write the JSON to a FileInNonEmptyManagedFoldersTest
-	err = os.WriteFile(localIAMPolicyFilePath, jsonData, setup.FilePermission_0600)
+	_, err = f.Write(jsonData)
 	if err != nil {
 		t.Fatalf(fmt.Sprintf("Error in writing iam policy in json FileInNonEmptyManagedFoldersTest : %v", err))
 	}
 
-	gcloudProvidePermissionCmd := fmt.Sprintf("alpha storage managed-folders set-iam-policy gs://%s/%s %s", bucket, managedFolderPath, localIAMPolicyFilePath)
+	gcloudProvidePermissionCmd := fmt.Sprintf("alpha storage managed-folders set-iam-policy gs://%s/%s %s", bucket, managedFolderPath, f.Name())
 	_, err = operations.ExecuteGcloudCommandf(gcloudProvidePermissionCmd)
 	if err != nil {
-		t.Fatalf(fmt.Sprintf("Error in providing permission to managed folder: %v", err))
+		t.Fatalf("Error in providing permission to managed folder: %v", err)
 	}
 }
 
@@ -91,12 +98,12 @@ func revokePermissionToManagedFolder(bucket, managedFolderPath, serviceAccount, 
 	gcloudRevokePermissionCmd := fmt.Sprintf("alpha storage managed-folders remove-iam-policy-binding  gs://%s/%s --member=%s --role=%s", bucket, managedFolderPath, serviceAccount, iamRole)
 
 	_, err := operations.ExecuteGcloudCommandf(gcloudRevokePermissionCmd)
-	if err != nil && !strings.Contains(err.Error(), "Policy binding with the specified principal, role, and condition not found!") {
-		t.Fatalf(fmt.Sprintf("Error in providing permission to managed folder: %v", err))
+	if err != nil && !strings.Contains(err.Error(), "Policy binding with the specified principal, role, and condition not found!") && !strings.Contains(err.Error(), "The specified managed folder does not exist.") {
+		t.Fatalf("Error in removing permission to managed folder: %v", err)
 	}
 }
 
-func createDirectoryStructureForNonEmptyManagedFolders(t *testing.T) {
+func createDirectoryStructureForNonEmptyManagedFolders(ctx context.Context, storageClient *storage.Client, controlClient *control.StorageControlClient, t *testing.T) {
 	// testBucket/NonEmptyManagedFoldersTest/managedFolder1
 	// testBucket/NonEmptyManagedFoldersTest/managedFolder1/testFile
 	// testBucket/NonEmptyManagedFoldersTest/managedFolder2
@@ -105,22 +112,30 @@ func createDirectoryStructureForNonEmptyManagedFolders(t *testing.T) {
 	// testBucket/NonEmptyManagedFoldersTest/SimulatedFolderNonEmptyManagedFoldersTest/testFile
 	// testBucket/NonEmptyManagedFoldersTest/testFile
 	bucket, testDir := setup.GetBucketAndObjectBasedOnTypeOfMount(TestDirForManagedFolderTest)
-	operations.CreateManagedFoldersInBucket(path.Join(testDir, ManagedFolder1), bucket)
+	err := client.DeleteAllObjectsWithPrefix(ctx, storageClient, testDir)
+	if err != nil {
+		log.Fatalf("Failed to clean up test directory: %v", err)
+	}
 	f := operations.CreateFile(path.Join("/tmp", FileInNonEmptyManagedFoldersTest), setup.FilePermission_0600, t)
 	defer operations.CloseFile(f)
-	operations.CopyFileInBucket(path.Join("/tmp", FileInNonEmptyManagedFoldersTest), path.Join(testDir, ManagedFolder1), bucket, t)
-	operations.CreateManagedFoldersInBucket(path.Join(testDir, ManagedFolder2), bucket)
-	operations.CopyFileInBucket(path.Join("/tmp", FileInNonEmptyManagedFoldersTest), path.Join(testDir, ManagedFolder2), bucket, t)
-	operations.CopyFileInBucket(path.Join("/tmp", FileInNonEmptyManagedFoldersTest), path.Join(testDir, SimulatedFolderNonEmptyManagedFoldersTest), bucket, t)
-	operations.CopyFileInBucket(path.Join("/tmp", FileInNonEmptyManagedFoldersTest), testDir, bucket, t)
+	managedFolder1 := path.Join(testDir, ManagedFolder1)
+	managedFolder2 := path.Join(testDir, ManagedFolder2)
+	simulatedFolderNonEmptyManagedFoldersTest := path.Join(testDir, SimulatedFolderNonEmptyManagedFoldersTest)
+
+	client.CreateManagedFoldersInBucket(ctx, controlClient, path.Join(testDir, ManagedFolder1), bucket)
+	client.CopyFileInBucket(ctx, storageClient, path.Join("/tmp", FileInNonEmptyManagedFoldersTest), path.Join(managedFolder1, FileInNonEmptyManagedFoldersTest), bucket)
+	client.CreateManagedFoldersInBucket(ctx, controlClient, path.Join(testDir, ManagedFolder2), bucket)
+	client.CopyFileInBucket(ctx, storageClient, path.Join("/tmp", FileInNonEmptyManagedFoldersTest), path.Join(managedFolder2, FileInNonEmptyManagedFoldersTest), bucket)
+	client.CopyFileInBucket(ctx, storageClient, path.Join("/tmp", FileInNonEmptyManagedFoldersTest), path.Join(simulatedFolderNonEmptyManagedFoldersTest, FileInNonEmptyManagedFoldersTest), bucket)
+	client.CopyFileInBucket(ctx, storageClient, path.Join("/tmp", FileInNonEmptyManagedFoldersTest), path.Join(testDir, FileInNonEmptyManagedFoldersTest), bucket)
 }
 
-func cleanup(ctx context.Context, client *storage.Client, bucket, testDir, serviceAccount, iam_role string, t *testing.T) {
+func cleanup(ctx context.Context, storageClient *storage.Client, controlClient *control.StorageControlClient, bucket, testDir, serviceAccount, iam_role string, t *testing.T) {
 	revokePermissionToManagedFolder(bucket, path.Join(testDir, ManagedFolder1), serviceAccount, iam_role, t)
 	revokePermissionToManagedFolder(bucket, path.Join(testDir, ManagedFolder2), serviceAccount, iam_role, t)
-	operations.DeleteManagedFoldersInBucket(path.Join(testDir, ManagedFolder1), setup.TestBucket())
-	operations.DeleteManagedFoldersInBucket(path.Join(testDir, ManagedFolder2), setup.TestBucket())
-	setup.CleanupDirectoryOnGCS(ctx, client, path.Join(bucket, testDir))
+	client.DeleteManagedFoldersInBucket(ctx, controlClient, path.Join(testDir, ManagedFolder1), setup.TestBucket())
+	client.DeleteManagedFoldersInBucket(ctx, controlClient, path.Join(testDir, ManagedFolder2), setup.TestBucket())
+	setup.CleanupDirectoryOnGCS(ctx, storageClient, path.Join(bucket, testDir))
 }
 
 func listNonEmptyManagedFolders(t *testing.T) {

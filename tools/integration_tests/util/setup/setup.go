@@ -64,7 +64,7 @@ var (
 // First argument will be name of scipt script
 func RunScriptForTestData(args ...string) {
 	cmd := exec.Command("/bin/bash", args...)
-	out, err := cmd.Output()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		log.Printf("Error: %s", out)
 		panic(err)
@@ -99,20 +99,12 @@ func LogFile() string {
 	return logFile
 }
 
-func SetBinFile(binFileValue string) {
-	binFile = binFileValue
-}
-
 func BinFile() string {
 	return binFile
 }
 
 func SbinFile() string {
 	return sbinFile
-}
-
-func SetTestDir(testDirValue string) {
-	testDir = testDirValue
 }
 
 func TestDir() string {
@@ -363,11 +355,6 @@ func CleanUpDir(directoryPath string) {
 	}
 }
 
-// CleanMntDir cleans the mounted directory.
-func CleanMntDir() {
-	CleanUpDir(mntDir)
-}
-
 // SetupTestDirectory creates a testDirectory in the mounted directory and cleans up
 // any content present in it.
 func SetupTestDirectory(testDirName string) string {
@@ -408,14 +395,22 @@ func AreBothMountedDirectoryAndTestBucketFlagsSet() bool {
 	return false
 }
 
-// Explicitly set the enable-hns config flag to true when running tests on the HNS bucket.
-func AddHNSFlagForHierarchicalBucket(ctx context.Context, storageClient *storage.Client) ([]string, error) {
+func IsHierarchicalBucket(ctx context.Context, storageClient *storage.Client) bool {
 	attrs, err := storageClient.Bucket(TestBucket()).Attrs(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("Error in getting bucket attrs: %w", err)
+		return false
 	}
-	if attrs.HierarchicalNamespace != nil && !attrs.HierarchicalNamespace.Enabled {
-		return nil, fmt.Errorf("Bucket is not Hierarchical")
+	if attrs.HierarchicalNamespace != nil && attrs.HierarchicalNamespace.Enabled {
+		return true
+	}
+
+	return false
+}
+
+// Explicitly set the enable-hns config flag to true when running tests on the HNS bucket.
+func AddHNSFlagForHierarchicalBucket(ctx context.Context, storageClient *storage.Client) ([]string, error) {
+	if !IsHierarchicalBucket(ctx, storageClient) {
+		return nil, fmt.Errorf("bucket is not Hierarchical")
 	}
 
 	var flags []string

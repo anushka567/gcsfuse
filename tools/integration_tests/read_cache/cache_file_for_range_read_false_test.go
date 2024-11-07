@@ -17,9 +17,9 @@ package read_cache
 import (
 	"context"
 	"log"
+	"path"
 	"sync"
 	"testing"
-	"time"
 
 	"cloud.google.com/go/storage"
 	"github.com/googlecloudplatform/gcsfuse/v2/tools/integration_tests/util/client"
@@ -128,7 +128,7 @@ func (s *cacheFileForRangeReadFalseTest) TestConcurrentReads_ReadIsTreatedNonSeq
 func TestCacheFileForRangeReadFalseTest(t *testing.T) {
 	ts := &cacheFileForRangeReadFalseTest{ctx: context.Background()}
 	// Create storage client before running tests.
-	closeStorageClient := client.CreateStorageClientWithTimeOut(&ts.ctx, &ts.storageClient, 15*time.Minute)
+	closeStorageClient := client.CreateStorageClientWithCancel(&ts.ctx, &ts.storageClient)
 	defer func() {
 		err := closeStorageClient()
 		if err != nil {
@@ -142,22 +142,85 @@ func TestCacheFileForRangeReadFalseTest(t *testing.T) {
 		return
 	}
 
+	// Run with cache directory pointing to RAM based dir
+	ramCacheDir := path.Join("/dev/shm", cacheDirName)
+
 	// Run tests with parallel downloads disabled.
-	flagsSet := [][]string{
-		{"--implicit-dirs", "--config-file=" + createConfigFile(cacheCapacityForRangeReadTestInMiB, false, configFileName, false)},
+	flagsSet := []gcsfuseTestFlags{
+		{
+			cliFlags:                []string{"--implicit-dirs"},
+			cacheSize:               cacheCapacityForRangeReadTestInMiB,
+			cacheFileForRangeRead:   false,
+			fileName:                configFileName,
+			enableParallelDownloads: false,
+			enableODirect:           false,
+			cacheDirPath:            getDefaultCacheDirPathForTests(),
+		},
+		{
+			cliFlags:                nil,
+			cacheSize:               cacheCapacityForRangeReadTestInMiB,
+			cacheFileForRangeRead:   false,
+			fileName:                configFileName,
+			enableParallelDownloads: false,
+			enableODirect:           false,
+			cacheDirPath:            ramCacheDir,
+		},
 	}
 	for _, flags := range flagsSet {
-		ts.flags = flags
+		configFilePath := createConfigFile(&flags)
+		ts.flags = []string{"--config-file=" + configFilePath}
+		if flags.cliFlags != nil {
+			ts.flags = append(ts.flags, flags.cliFlags...)
+		}
 		log.Printf("Running tests with flags: %s", ts.flags)
 		test_setup.RunTests(t, ts)
 	}
 
 	// Run tests with parallel downloads enabled.
-	flagsSet = [][]string{
-		{"--config-file=" + createConfigFile(cacheCapacityForRangeReadTestInMiB, false, configFileNameForParallelDownloadTests, true)},
+	flagsSet = []gcsfuseTestFlags{
+		{
+			cliFlags:                nil,
+			cacheSize:               cacheCapacityForRangeReadTestInMiB,
+			cacheFileForRangeRead:   false,
+			fileName:                configFileNameForParallelDownloadTests,
+			enableParallelDownloads: true,
+			enableODirect:           false,
+			cacheDirPath:            getDefaultCacheDirPathForTests(),
+		},
+		{
+			cliFlags:                nil,
+			cacheSize:               cacheCapacityForRangeReadTestInMiB,
+			cacheFileForRangeRead:   false,
+			fileName:                configFileNameForParallelDownloadTests,
+			enableParallelDownloads: true,
+			enableODirect:           false,
+			cacheDirPath:            ramCacheDir,
+		},
+		{
+			cliFlags:                nil,
+			cacheSize:               cacheCapacityForRangeReadTestInMiB,
+			cacheFileForRangeRead:   false,
+			fileName:                configFileNameForParallelDownloadTests,
+			enableParallelDownloads: true,
+			enableODirect:           true,
+			cacheDirPath:            getDefaultCacheDirPathForTests(),
+		},
+		{
+			cliFlags:                nil,
+			cacheSize:               cacheCapacityForRangeReadTestInMiB,
+			cacheFileForRangeRead:   false,
+			fileName:                configFileNameForParallelDownloadTests,
+			enableParallelDownloads: true,
+			enableODirect:           true,
+			cacheDirPath:            ramCacheDir,
+		},
 	}
 	for _, flags := range flagsSet {
-		ts.flags = flags
+		configFilePath := createConfigFile(&flags)
+		ts.flags = []string{"--config-file=" + configFilePath}
+		if flags.cliFlags != nil {
+			ts.flags = append(ts.flags, flags.cliFlags...)
+		}
 		ts.isParallelDownloadsEnabled = true
 		log.Printf("Running tests with flags: %s", ts.flags)
 		test_setup.RunTests(t, ts)

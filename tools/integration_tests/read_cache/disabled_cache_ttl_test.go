@@ -18,7 +18,6 @@ import (
 	"context"
 	"log"
 	"testing"
-	"time"
 
 	"github.com/googlecloudplatform/gcsfuse/v2/tools/integration_tests/util/client"
 	"github.com/googlecloudplatform/gcsfuse/v2/tools/integration_tests/util/operations"
@@ -80,7 +79,7 @@ func (s *disabledCacheTTLTest) TestReadAfterObjectUpdateIsCacheMiss(t *testing.T
 func TestDisabledCacheTTLTest(t *testing.T) {
 	ts := &disabledCacheTTLTest{ctx: context.Background()}
 	// Create storage client before running tests.
-	closeStorageClient := client.CreateStorageClientWithTimeOut(&ts.ctx, &ts.storageClient, 15*time.Minute)
+	closeStorageClient := client.CreateStorageClientWithCancel(&ts.ctx, &ts.storageClient)
 	defer func() {
 		err := closeStorageClient()
 		if err != nil {
@@ -95,14 +94,33 @@ func TestDisabledCacheTTLTest(t *testing.T) {
 	}
 
 	// Define flag set to run the tests.
-	flagsSet := [][]string{
-		{"--implicit-dirs", "--stat-cache-ttl=0s", "--config-file=" + createConfigFile(cacheCapacityInMB, false, configFileName, false)},
-		{"--stat-cache-ttl=0s", "--config-file=" + createConfigFile(cacheCapacityInMB, false, configFileNameForParallelDownloadTests, true)},
+	flagsSet := []gcsfuseTestFlags{
+		{
+			cliFlags:                []string{"--implicit-dirs", "--stat-cache-ttl=0s"},
+			cacheSize:               cacheCapacityInMB,
+			cacheFileForRangeRead:   false,
+			fileName:                configFileName,
+			enableParallelDownloads: false,
+			enableODirect:           false,
+			cacheDirPath:            getDefaultCacheDirPathForTests(),
+		},
+		{
+			cliFlags:                []string{"--stat-cache-ttl=0s"},
+			cacheSize:               cacheCapacityInMB,
+			cacheFileForRangeRead:   false,
+			fileName:                configFileNameForParallelDownloadTests,
+			enableParallelDownloads: true,
+			enableODirect:           false,
+			cacheDirPath:            getDefaultCacheDirPathForTests(),
+		},
 	}
-
 	// Run tests.
 	for _, flags := range flagsSet {
-		ts.flags = flags
+		configFilePath := createConfigFile(&flags)
+		ts.flags = []string{"--config-file=" + configFilePath}
+		if flags.cliFlags != nil {
+			ts.flags = append(ts.flags, flags.cliFlags...)
+		}
 		log.Printf("Running tests with flags: %s", ts.flags)
 		test_setup.RunTests(t, ts)
 	}

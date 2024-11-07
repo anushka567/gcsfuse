@@ -22,10 +22,12 @@ import (
 	"syscall"
 
 	"cloud.google.com/go/storage"
+	"github.com/googleapis/gax-go/v2/apierror"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/logger"
 	"github.com/jacobsa/fuse/fuseops"
 	"github.com/jacobsa/fuse/fuseutil"
 	"google.golang.org/api/googleapi"
+	"google.golang.org/grpc/codes"
 )
 
 var (
@@ -47,6 +49,7 @@ func errno(err error) error {
 	if errors.Is(err, context.Canceled) {
 		return syscall.EINTR
 	}
+
 	if errors.Is(err, storage.ErrObjectNotExist) {
 		return syscall.ENOENT
 	}
@@ -56,16 +59,30 @@ func errno(err error) error {
 		return syscall.ECANCELED
 	}
 
-	// Cannot authenticate
+	// Cannot authenticate or Permission denied.
 	if strings.Contains(err.Error(), "oauth2: cannot fetch token") {
 		return syscall.EACCES
 	}
 
-	// Translate API errors into an em errno
-	var apiErr *googleapi.Error
+	// The control client API returns an RPC error code instead of googleapi code.
+	// Currently, we only have gRPC control client APIs, so we are checking the gRPC status code.
+	// TODO: Add a check for the HTTP status code when the HTTP client is initiated for control client APIs.
+	var apiErr *apierror.APIError
 	if errors.As(err, &apiErr) {
-		switch apiErr.Code {
-		case http.StatusForbidden:
+		switch apiErr.GRPCStatus().Code() {
+		case codes.Canceled:
+			return syscall.EINTR
+		case codes.PermissionDenied, codes.Unauthenticated:
+			return syscall.EACCES
+		case codes.NotFound:
+			return syscall.ENOENT
+		}
+	}
+	// Translate API errors into an em errno
+	var googleApiErr *googleapi.Error
+	if errors.As(err, &googleApiErr) {
+		switch googleApiErr.Code {
+		case http.StatusForbidden, http.StatusUnauthorized:
 			return syscall.EACCES
 		case http.StatusNotFound:
 			return syscall.ENOENT

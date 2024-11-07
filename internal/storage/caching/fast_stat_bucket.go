@@ -85,6 +85,14 @@ func (b *fastStatBucket) insertMultiple(objs []*gcs.Object) {
 	}
 }
 
+// LOCKS_EXCLUDED(b.mu)
+func (b *fastStatBucket) eraseEntriesWithGivenPrefix(folderName string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.cache.EraseEntriesWithGivenPrefix(folderName)
+}
+
 // insertHierarchicalListing saves the objects in cache excluding zero byte objects corresponding to folders
 // by iterating objects present in listing and saves prefixes as folders (all prefixes are folders in hns) by
 // iterating collapsedRuns of listing.
@@ -118,6 +126,14 @@ func (b *fastStatBucket) insertHierarchicalListing(listing *gcs.Listing) {
 // LOCKS_EXCLUDED(b.mu)
 func (b *fastStatBucket) insert(o *gcs.Object) {
 	b.insertMultiple([]*gcs.Object{o})
+}
+
+// LOCKS_EXCLUDED(b.mu)
+func (b *fastStatBucket) insertFolder(f *gcs.Folder) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.cache.InsertFolder(f, b.clock.Now().Add(b.ttl))
 }
 
 // LOCKS_EXCLUDED(b.mu)
@@ -201,6 +217,25 @@ func (b *fastStatBucket) CreateObject(
 	return
 }
 
+func (b *fastStatBucket) CreateObjectChunkWriter(ctx context.Context, req *gcs.CreateObjectRequest, chunkSize int, callBack func(bytesUploadedSoFar int64)) (gcs.Writer, error) {
+	return b.wrapped.CreateObjectChunkWriter(ctx, req, chunkSize, callBack)
+}
+
+func (b *fastStatBucket) FinalizeUpload(ctx context.Context, writer gcs.Writer) (*gcs.Object, error) {
+	name := writer.ObjectName()
+	// Throw away any existing record for this object.
+	b.invalidate(name)
+
+	o, err := b.wrapped.FinalizeUpload(ctx, writer)
+
+	// Record the new object if err is nil.
+	if err == nil {
+		b.insert(o)
+	}
+
+	return o, err
+}
+
 // LOCKS_EXCLUDED(b.mu)
 func (b *fastStatBucket) CopyObject(
 	ctx context.Context,
@@ -261,7 +296,7 @@ func (b *fastStatBucket) StatObject(
 		// Negative entries result in NotFoundError.
 		if entry == nil {
 			err = &gcs.NotFoundError{
-				Err: fmt.Errorf("Negative cache entry for %v", req.Name),
+				Err: fmt.Errorf("negative cache entry for %v", req.Name),
 			}
 
 			return
@@ -328,9 +363,8 @@ func (b *fastStatBucket) DeleteFolder(ctx context.Context, folderName string) er
 	if err != nil {
 		return err
 	}
-	// Add negative entry in the cache.
-	b.addNegativeEntryForFolder(folderName)
-
+	// TODO: Caching negative entries for both objects and folders will be implemented together due to test failures.
+	b.invalidate(folderName)
 	return err
 }
 
@@ -353,10 +387,7 @@ func (b *fastStatBucket) StatObjectFromGcs(ctx context.Context,
 	return
 }
 
-func (b *fastStatBucket) GetFolder(
-	ctx context.Context,
-	prefix string) (*gcs.Folder, error) {
-
+func (b *fastStatBucket) GetFolder(ctx context.Context, prefix string) (*gcs.Folder, error) {
 	if hit, entry := b.lookUpFolder(prefix); hit {
 		// Negative entries result in NotFoundError.
 		if entry == nil {
@@ -370,39 +401,50 @@ func (b *fastStatBucket) GetFolder(
 		return entry, nil
 	}
 
-	// Fetch the Folder
-	folder, error := b.wrapped.GetFolder(ctx, prefix)
+	// Fetch the Folder from GCS
+	return b.getFolderFromGCS(ctx, prefix)
+}
 
-	if error != nil {
-		return nil, error
+func (b *fastStatBucket) getFolderFromGCS(ctx context.Context, prefix string) (*gcs.Folder, error) {
+	f, err := b.wrapped.GetFolder(ctx, prefix)
+
+	if err == nil {
+		b.insertFolder(f)
+		return f, nil
 	}
 
-	// Record the new folder.
-	b.cache.InsertFolder(folder, b.clock.Now().Add(b.ttl))
-	return folder, nil
+	// Special case: NotFoundError -> negative entry.
+	if _, ok := err.(*gcs.NotFoundError); ok {
+		b.addNegativeEntryForFolder(prefix)
+	}
+	return nil, err
 }
 
 func (b *fastStatBucket) CreateFolder(ctx context.Context, folderName string) (f *gcs.Folder, err error) {
 	// Throw away any existing record for this folder.
 	b.invalidate(folderName)
 
-	expiration := b.clock.Now().Add(b.ttl)
 	f, err = b.wrapped.CreateFolder(ctx, folderName)
 	if err != nil {
 		return
 	}
 
 	// Record the new folder.
-	b.cache.InsertFolder(f, expiration)
+	b.insertFolder(f)
 
 	return
 }
 
-func (b *fastStatBucket) RenameFolder(ctx context.Context, folderName string, destinationFolderId string) (o *gcs.Folder, err error) {
-	o, err = b.wrapped.RenameFolder(ctx, folderName, destinationFolderId)
+func (b *fastStatBucket) RenameFolder(ctx context.Context, folderName string, destinationFolderId string) (*gcs.Folder, error) {
+	f, err := b.wrapped.RenameFolder(ctx, folderName, destinationFolderId)
+	if err != nil {
+		return nil, err
+	}
 
 	// Invalidate cache for old directory.
-	b.cache.EraseEntriesWithGivenPrefix(folderName)
+	b.eraseEntriesWithGivenPrefix(folderName)
+	// Insert destination folder.
+	b.insertFolder(f)
 
-	return o, err
+	return f, err
 }

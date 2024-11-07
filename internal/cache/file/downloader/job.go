@@ -19,9 +19,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"reflect"
 	"strings"
+	"syscall"
 
 	"github.com/googlecloudplatform/gcsfuse/v2/cfg"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/cache/data"
@@ -91,6 +93,10 @@ type Job struct {
 	// This semaphore is shared across all jobs spawned by the job manager and is
 	// used to limit the download concurrency.
 	maxParallelismSem *semaphore.Weighted
+
+	// Channel which is used by goroutines to know which ranges need to be
+	// downloaded when parallel download is enabled.
+	rangeChan chan data.ObjectRange
 }
 
 // JobStatus represents the status of job.
@@ -249,8 +255,9 @@ func (job *Job) updateStatusAndNotifySubscribers(statusName jobStatusName, statu
 }
 
 // updateStatusOffset updates the offset in job's status and in file info cache
-// with the given offset. If the the update is successful, this function also
+// with the given offset. If the update is successful, this function also
 // notify the subscribers.
+// Not concurrency safe and requires LOCK(job.mu)
 func (job *Job) updateStatusOffset(downloadedOffset int64) (err error) {
 	fileInfoKey := data.FileInfoKey{
 		BucketName: job.bucket.Name(),
@@ -267,8 +274,7 @@ func (job *Job) updateStatusOffset(downloadedOffset int64) (err error) {
 		Key: fileInfoKey, ObjectGeneration: job.object.Generation,
 		FileSize: job.object.Size, Offset: uint64(downloadedOffset),
 	}
-	job.mu.Lock()
-	defer job.mu.Unlock()
+
 	err = job.fileInfoCache.UpdateWithoutChangingOrder(fileInfoKeyName, updatedFileInfo)
 	if err == nil {
 		job.status.Offset = downloadedOffset
@@ -338,7 +344,9 @@ func (job *Job) downloadObjectToFile(cacheFile *os.File) (err error) {
 			newReader = nil
 		}
 
+		job.mu.Lock()
 		err = job.updateStatusOffset(start)
+		job.mu.Unlock()
 		if err != nil {
 			return err
 		}
@@ -365,6 +373,28 @@ func (job *Job) cleanUpDownloadAsyncJob() {
 	job.mu.Unlock()
 }
 
+// createCacheFile is a helper function which creates file in cache using
+// appropriate open file flags.
+func (job *Job) createCacheFile() (*os.File, error) {
+	// Create, open and truncate cache file for writing object into it.
+	openFileFlags := os.O_TRUNC | os.O_WRONLY
+	var cacheFile *os.File
+	var err error
+	// Try using O_DIRECT while opening file when parallel downloads are enabled
+	// and O_DIRECT use is not disabled.
+	if job.fileCacheConfig.EnableParallelDownloads && job.fileCacheConfig.EnableODirect {
+		cacheFile, err = cacheutil.CreateFile(job.fileSpec, openFileFlags|syscall.O_DIRECT)
+		if errors.Is(err, fs.ErrInvalid) || errors.Is(err, syscall.EINVAL) {
+			logger.Warnf("downloadObjectAsync: failure in opening file with O_DIRECT, falling back to without O_DIRECT")
+			cacheFile, err = cacheutil.CreateFile(job.fileSpec, openFileFlags)
+		}
+	} else {
+		cacheFile, err = cacheutil.CreateFile(job.fileSpec, openFileFlags)
+	}
+
+	return cacheFile, err
+}
+
 // downloadObjectAsync downloads the backing GCS object into a file as part of
 // file cache using NewReader method of gcs.Bucket.
 //
@@ -374,8 +404,7 @@ func (job *Job) downloadObjectAsync() {
 	// Cleanup the async job in all cases - completion/failure/invalidation.
 	defer job.cleanUpDownloadAsyncJob()
 
-	// Create, open and truncate cache file for writing object into it.
-	cacheFile, err := cacheutil.CreateFile(job.fileSpec, os.O_TRUNC|os.O_WRONLY)
+	cacheFile, err := job.createCacheFile()
 	if err != nil {
 		err = fmt.Errorf("downloadObjectAsync: error in creating cache file: %w", err)
 		job.handleError(err)
@@ -406,6 +435,16 @@ func (job *Job) downloadObjectAsync() {
 			job.updateStatusAndNotifySubscribers(Invalid, err)
 			return
 		}
+		job.handleError(err)
+		return
+	}
+
+	// Truncate as the parallel downloads can create file with size little higher
+	// than the actual object size because writing with O_DIRECT happens in size
+	// multiple of cacheutil.MinimumAlignSizeForWriting.
+	err = cacheFile.Truncate(int64(job.object.Size))
+	if err != nil {
+		err = fmt.Errorf("downloadObjectAsync: error while truncating cache file: %w", err)
 		job.handleError(err)
 		return
 	}

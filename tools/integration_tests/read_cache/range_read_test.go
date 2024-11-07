@@ -18,7 +18,6 @@ import (
 	"context"
 	"log"
 	"testing"
-	"time"
 
 	"github.com/googlecloudplatform/gcsfuse/v2/tools/integration_tests/util/client"
 	"github.com/googlecloudplatform/gcsfuse/v2/tools/integration_tests/util/operations"
@@ -92,7 +91,7 @@ func (s *rangeReadTest) TestRangeReadsBeyondReadChunkSizeWithFileCached(t *testi
 func TestRangeReadTest(t *testing.T) {
 	ts := &rangeReadTest{ctx: context.Background()}
 	// Create storage client before running tests.
-	closeStorageClient := client.CreateStorageClientWithTimeOut(&ts.ctx, &ts.storageClient, 15*time.Minute)
+	closeStorageClient := client.CreateStorageClientWithCancel(&ts.ctx, &ts.storageClient)
 	defer func() {
 		err := closeStorageClient()
 		if err != nil {
@@ -107,21 +106,45 @@ func TestRangeReadTest(t *testing.T) {
 	}
 
 	// Run tests with parallel downloads disabled.
-	flagsSet := [][]string{
-		{"--implicit-dirs", "--config-file=" + createConfigFile(largeFileCacheCapacity, false, configFileName+"1", false)},
+	flagsSet := []gcsfuseTestFlags{
+		{
+			cliFlags:                []string{"--implicit-dirs"},
+			cacheSize:               largeFileCacheCapacity,
+			cacheFileForRangeRead:   false,
+			fileName:                configFileName + "1",
+			enableParallelDownloads: false,
+			enableODirect:           false,
+			cacheDirPath:            getDefaultCacheDirPathForTests(),
+		},
 	}
 	for _, flags := range flagsSet {
-		ts.flags = flags
+		configFilePath := createConfigFile(&flags)
+		ts.flags = []string{"--config-file=" + configFilePath}
+		if flags.cliFlags != nil {
+			ts.flags = append(ts.flags, flags.cliFlags...)
+		}
 		log.Printf("Running tests with flags: %s", ts.flags)
 		test_setup.RunTests(t, ts)
 	}
 
 	// Run tests with parallel downloads enabled.
-	flagsSet = [][]string{
-		{"--config-file=" + createConfigFile(largeFileCacheCapacity, true, configFileName+"2", false)},
+	flagsSet = []gcsfuseTestFlags{
+		{
+			cliFlags:                nil,
+			cacheSize:               largeFileCacheCapacity,
+			cacheFileForRangeRead:   true,
+			fileName:                configFileName + "2",
+			enableParallelDownloads: false,
+			enableODirect:           false,
+			cacheDirPath:            getDefaultCacheDirPathForTests(),
+		},
 	}
 	for _, flags := range flagsSet {
-		ts.flags = flags
+		configFilePath := createConfigFile(&flags)
+		ts.flags = []string{"--config-file=" + configFilePath}
+		if flags.cliFlags != nil {
+			ts.flags = append(ts.flags, flags.cliFlags...)
+		}
 		ts.isParallelDownloadsEnabled = true
 		log.Printf("Running tests with flags: %s", ts.flags)
 		test_setup.RunTests(t, ts)

@@ -27,22 +27,23 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/googlecloudplatform/gcsfuse/v2/cfg"
+	"github.com/googlecloudplatform/gcsfuse/v2/common"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/canned"
-	"github.com/googlecloudplatform/gcsfuse/v2/internal/config"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/locker"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/logger"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/monitor"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/mount"
-	"github.com/googlecloudplatform/gcsfuse/v2/internal/perf"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/storage"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/storage/storageutil"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/util"
 	"github.com/jacobsa/daemonize"
 	"github.com/jacobsa/fuse"
 	"github.com/kardianos/osext"
-	"github.com/urfave/cli"
 	"golang.org/x/net/context"
 )
 
@@ -55,22 +56,32 @@ const (
 // Helpers
 ////////////////////////////////////////////////////////////////////////
 
-func registerSIGINTHandler(mountPoint string) {
+func registerTerminatingSignalHandler(mountPoint string, c *cfg.Config) {
 	// Register for SIGINT.
 	signalChan := make(chan os.Signal, 1)
 	signal.Notify(signalChan, os.Interrupt)
+	if c.FileSystem.HandleSigterm {
+		signal.Notify(signalChan, unix.SIGTERM)
+	}
 
 	// Start a goroutine that will unmount when the signal is received.
 	go func() {
 		for {
-			<-signalChan
-			logger.Info("Received SIGINT, attempting to unmount...")
+			sig := <-signalChan
+			sigName := "undefined"
+			switch sig {
+			case unix.SIGTERM:
+				sigName = "SIGTERM"
+			case os.Interrupt:
+				sigName = "SIGINT"
+			}
+			logger.Infof("Received %s, attempting to unmount...", sigName)
 
 			err := fuse.Unmount(mountPoint)
 			if err != nil {
-				logger.Errorf("Failed to unmount in response to SIGINT: %v", err)
+				logger.Errorf("Failed to unmount in response to %s: %v", sigName, err)
 			} else {
-				logger.Infof("Successfully unmounted in response to SIGINT.")
+				logger.Infof("Successfully unmounted in response to %s.", sigName)
 				return
 			}
 		}
@@ -80,12 +91,12 @@ func registerSIGINTHandler(mountPoint string) {
 func getUserAgent(appName string, config string) string {
 	gcsfuseMetadataImageType := os.Getenv("GCSFUSE_METADATA_IMAGE_TYPE")
 	if len(gcsfuseMetadataImageType) > 0 {
-		userAgent := fmt.Sprintf("gcsfuse/%s %s (GPN:gcsfuse-%s) (Cfg:%s)", getVersion(), appName, gcsfuseMetadataImageType, config)
+		userAgent := fmt.Sprintf("gcsfuse/%s %s (GPN:gcsfuse-%s) (Cfg:%s)", common.GetVersion(), appName, gcsfuseMetadataImageType, config)
 		return strings.Join(strings.Fields(userAgent), " ")
 	} else if len(appName) > 0 {
-		return fmt.Sprintf("gcsfuse/%s (GPN:gcsfuse-%s) (Cfg:%s)", getVersion(), appName, config)
+		return fmt.Sprintf("gcsfuse/%s (GPN:gcsfuse-%s) (Cfg:%s)", common.GetVersion(), appName, config)
 	} else {
-		return fmt.Sprintf("gcsfuse/%s (GPN:gcsfuse) (Cfg:%s)", getVersion(), config)
+		return fmt.Sprintf("gcsfuse/%s (GPN:gcsfuse) (Cfg:%s)", common.GetVersion(), config)
 	}
 }
 
@@ -99,9 +110,13 @@ func getConfigForUserAgent(mountConfig *cfg.Config) string {
 	if mountConfig.FileCache.CacheFileForRangeRead {
 		isFileCacheForRangeReadEnabled = "1"
 	}
-	return fmt.Sprintf("%s:%s", isFileCacheEnabled, isFileCacheForRangeReadEnabled)
+	isParallelDownloadsEnabled := "0"
+	if cfg.IsParallelDownloadsEnabled(mountConfig) {
+		isParallelDownloadsEnabled = "1"
+	}
+	return fmt.Sprintf("%s:%s:%s", isFileCacheEnabled, isFileCacheForRangeReadEnabled, isParallelDownloadsEnabled)
 }
-func createStorageHandle(newConfig *cfg.Config, mountConfig *config.MountConfig, userAgent string) (storageHandle storage.StorageHandle, err error) {
+func createStorageHandle(newConfig *cfg.Config, userAgent string) (storageHandle storage.StorageHandle, err error) {
 	storageClientConfig := storageutil.StorageClientConfig{
 		ClientProtocol:             newConfig.GcsConnection.ClientProtocol,
 		MaxConnsPerHost:            int(newConfig.GcsConnection.MaxConnsPerHost),
@@ -113,12 +128,13 @@ func createStorageHandle(newConfig *cfg.Config, mountConfig *config.MountConfig,
 		UserAgent:                  userAgent,
 		CustomEndpoint:             newConfig.GcsConnection.CustomEndpoint,
 		KeyFile:                    string(newConfig.GcsAuth.KeyFile),
-		AnonymousAccess:            mountConfig.GCSAuth.AnonymousAccess,
+		AnonymousAccess:            newConfig.GcsAuth.AnonymousAccess,
 		TokenUrl:                   newConfig.GcsAuth.TokenUrl,
 		ReuseTokenFromUrl:          newConfig.GcsAuth.ReuseTokenFromUrl,
 		ExperimentalEnableJsonRead: newConfig.GcsConnection.ExperimentalEnableJsonRead,
-		GrpcConnPoolSize:           mountConfig.GCSConnection.GRPCConnPoolSize,
+		GrpcConnPoolSize:           int(newConfig.GcsConnection.GrpcConnPoolSize),
 		EnableHNS:                  newConfig.EnableHns,
+		ReadStallRetryConfig:       newConfig.GcsRetries.ReadStall,
 	}
 	logger.Infof("UserAgent = %s\n", storageClientConfig.UserAgent)
 	storageHandle, err = storage.NewStorageHandle(context.Background(), storageClientConfig)
@@ -130,12 +146,7 @@ func createStorageHandle(newConfig *cfg.Config, mountConfig *config.MountConfig,
 ////////////////////////////////////////////////////////////////////////
 
 // Mount the file system according to arguments in the supplied context.
-func mountWithArgs(
-	bucketName string,
-	mountPoint string,
-	flags *flagStorage,
-	mountConfig *config.MountConfig,
-	newConfig *cfg.Config) (mfs *fuse.MountedFileSystem, err error) {
+func mountWithArgs(bucketName string, mountPoint string, newConfig *cfg.Config) (mfs *fuse.MountedFileSystem, err error) {
 	// Enable invariant checking if requested.
 	if newConfig.Debug.ExitOnInvariantViolation {
 		locker.EnableInvariantsCheck()
@@ -152,7 +163,7 @@ func mountWithArgs(
 	if bucketName != canned.FakeBucketName {
 		userAgent := getUserAgent(newConfig.AppName, getConfigForUserAgent(newConfig))
 		logger.Info("Creating Storage handle...")
-		storageHandle, err = createStorageHandle(newConfig, mountConfig, userAgent)
+		storageHandle, err = createStorageHandle(newConfig, userAgent)
 		if err != nil {
 			err = fmt.Errorf("failed to create storage handle using createStorageHandle: %w", err)
 			return
@@ -166,8 +177,6 @@ func mountWithArgs(
 		bucketName,
 		mountPoint,
 		newConfig,
-		flags,
-		mountConfig,
 		storageHandle)
 
 	if err != nil {
@@ -194,7 +203,7 @@ func populateArgs(args []string) (
 
 	default:
 		err = fmt.Errorf(
-			"%s takes one or two arguments. Run `%s --help` for more info.",
+			"%s takes one or two arguments. Run `%s --help` for more info",
 			path.Base(os.Args[0]),
 			path.Base(os.Args[0]))
 
@@ -239,41 +248,12 @@ func isDynamicMount(bucketName string) bool {
 	return bucketName == "" || bucketName == "_"
 }
 
-func runCLIApp(c *cli.Context) (err error) {
-	err = resolvePathForTheFlagsInContext(c)
-	if err != nil {
-		return fmt.Errorf("Resolving path: %w", err)
-	}
-
-	flags, err := populateFlags(c)
-	if err != nil {
-		return fmt.Errorf("parsing flags failed: %w", err)
-	}
-
-	mountConfig, err := config.ParseConfigFile(flags.ConfigFile)
-	if err != nil {
-		return fmt.Errorf("parsing config file failed: %w", err)
-	}
-
-	newConfig, err := PopulateNewConfigFromLegacyFlagsAndConfig(c, flags, mountConfig)
-	if err != nil {
-		return fmt.Errorf("error resolving flags and configs: %w", err)
-	}
-
-	config.OverrideWithIgnoreInterruptsFlag(c, mountConfig, flags.IgnoreInterrupts)
-	config.OverrideWithAnonymousAccessFlag(c, mountConfig, flags.AnonymousAccess)
-	config.OverrideWithKernelListCacheTtlFlag(c, mountConfig, flags.KernelListCacheTtlSeconds)
-
+func Mount(newConfig *cfg.Config, bucketName, mountPoint string) (err error) {
 	// Ideally this call to SetLogFormat (which internally creates a new defaultLogger)
 	// should be set as an else to the 'if flags.Foreground' check below, but currently
 	// that means the logs generated by resolveConfigFilePaths below don't honour
 	// the user-provided log-format.
 	logger.SetLogFormat(newConfig.Logging.Format)
-
-	err = resolveConfigFilePaths(mountConfig)
-	if err != nil {
-		return fmt.Errorf("Resolving path: %w", err)
-	}
 
 	if newConfig.Foreground {
 		err = logger.InitLogFile(newConfig.Logging)
@@ -282,14 +262,7 @@ func runCLIApp(c *cli.Context) (err error) {
 		}
 	}
 
-	var bucketName string
-	var mountPoint string
-	bucketName, mountPoint, err = populateArgs(c.Args())
-	if err != nil {
-		return
-	}
-
-	logger.Infof("Start gcsfuse/%s for app %q using mount point: %s\n", getVersion(), newConfig.AppName, mountPoint)
+	logger.Infof("Start gcsfuse/%s for app %q using mount point: %s\n", common.GetVersion(), newConfig.AppName, mountPoint)
 
 	// Log mount-config and the CLI flags in the log-file.
 	// If there is no log-file, then log these to stdout.
@@ -297,19 +270,7 @@ func runCLIApp(c *cli.Context) (err error) {
 	// if these are already being logged into a log-file, otherwise
 	// there will be duplicate logs for these in both places (stdout and log-file).
 	if newConfig.Foreground || newConfig.Logging.FilePath == "" {
-		flagsStringified, err := util.Stringify(*flags)
-		if err != nil {
-			logger.Warnf("failed to stringify cli flags: %v", err)
-		} else {
-			logger.Infof("GCSFuse mount command flags: %s", flagsStringified)
-		}
-
-		mountConfigStringified, err := util.Stringify(*mountConfig)
-		if err != nil {
-			logger.Warnf("failed to stringify config-file: %v", err)
-		} else {
-			logger.Infof("GCSFuse mount config flags: %s", mountConfigStringified)
-		}
+		logger.Info("GCSFuse config", "config", newConfig)
 	}
 
 	// The following will not warn if the user explicitly passed the default value for StatCacheCapacity.
@@ -364,7 +325,7 @@ func runCLIApp(c *cli.Context) (err error) {
 				"Added environment http_proxy: %s\n",
 				p)
 		}
-		// Pass through the no_proxy enviroment variable. Whenever
+		// Pass through the no_proxy environment variable. Whenever
 		// using the http(s)_proxy environment variables. This should
 		// also be included to know for which hosts the use of proxies
 		// should be ignored.
@@ -394,8 +355,16 @@ func runCLIApp(c *cli.Context) (err error) {
 		// programme is running as daemon process.
 		env = append(env, fmt.Sprintf("%s=true", logger.GCSFuseInBackgroundMode))
 
+		// logfile.stderr will capture the standard error (stderr) output of the gcsfuse background process.
+		var stderrFile *os.File
+		if newConfig.Logging.FilePath != "" {
+			stderrFileName := string(newConfig.Logging.FilePath) + ".stderr"
+			if stderrFile, err = os.OpenFile(stderrFileName, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644); err != nil {
+				return err
+			}
+		}
 		// Run.
-		err = daemonize.Run(path, args, env, os.Stdout)
+		err = daemonize.Run(path, args, env, os.Stdout, stderrFile)
 		if err != nil {
 			return fmt.Errorf("daemonize.Run: %w", err)
 		}
@@ -404,15 +373,17 @@ func runCLIApp(c *cli.Context) (err error) {
 	}
 
 	// The returned error is ignored as we do not enforce monitoring exporters
-	_ = monitor.EnableStackdriverExporter(newConfig.Metrics.StackdriverExportInterval)
+	_ = monitor.EnableStackdriverExporter(time.Duration(newConfig.Metrics.CloudMetricsExportIntervalSecs) * time.Second)
 	_ = monitor.EnableOpenTelemetryCollectorExporter(newConfig.Monitoring.ExperimentalOpentelemetryCollectorAddress)
 	_ = monitor.EnablePrometheusCollectorExporter(int(newConfig.Metrics.PrometheusPort))
+	ctx := context.Background()
+	shutdownFn := monitor.SetupTracing(ctx, newConfig)
 
 	// Mount, writing information about our progress to the writer that package
 	// daemonize gives us and telling it about the outcome.
 	var mfs *fuse.MountedFileSystem
 	{
-		mfs, err = mountWithArgs(bucketName, mountPoint, flags, mountConfig, newConfig)
+		mfs, err = mountWithArgs(bucketName, mountPoint, newConfig)
 
 		// This utility is to absorb the error
 		// returned by daemonize.SignalOutcome calls by simply
@@ -461,14 +432,19 @@ func runCLIApp(c *cli.Context) (err error) {
 	}
 
 	// Let the user unmount with Ctrl-C (SIGINT).
-	registerSIGINTHandler(mfs.Dir())
+	registerTerminatingSignalHandler(mfs.Dir(), newConfig)
 
 	// Wait for the file system to be unmounted.
-	err = mfs.Join(context.Background())
+	err = mfs.Join(ctx)
 
 	monitor.CloseStackdriverExporter()
 	monitor.CloseOpenTelemetryCollectorExporter()
 	monitor.ClosePrometheusCollectorExporter()
+	if shutdownFn != nil {
+		if shutdownErr := shutdownFn(ctx); shutdownErr != nil {
+			logger.Errorf("Error while shutting down trace exporter: %v", shutdownErr)
+		}
+	}
 
 	if err != nil {
 		err = fmt.Errorf("MountedFileSystem.Join: %w", err)
@@ -476,36 +452,4 @@ func runCLIApp(c *cli.Context) (err error) {
 	}
 
 	return
-}
-
-func run() (err error) {
-	// Set up the app.
-	app := newApp()
-
-	var appErr error
-	app.Action = func(c *cli.Context) {
-		appErr = runCLIApp(c)
-	}
-
-	// Run it.
-	err = app.Run(os.Args)
-	if err != nil {
-		return
-	}
-
-	err = appErr
-	return
-}
-
-func ExecuteLegacyMain() {
-	// Set up profiling handlers.
-	go perf.HandleCPUProfileSignals()
-	go perf.HandleMemoryProfileSignals()
-
-	// Run.
-	err := run()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
 }

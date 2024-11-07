@@ -20,7 +20,6 @@ import (
 	"os"
 	"path"
 	"testing"
-	"time"
 
 	"cloud.google.com/go/storage"
 	"github.com/googlecloudplatform/gcsfuse/v2/tools/integration_tests/util/client"
@@ -57,7 +56,7 @@ func mountGCSFuseAndSetupTestDir(flags []string, ctx context.Context, storageCli
 	}
 	setup.MountGCSFuseWithGivenMountFunc(flags, mountFunc)
 	setup.SetMntDir(mountDir)
-	testDirPath = client.SetupTestDirectory(ctx, storageClient, testDirName)
+	testDirPath = setup.SetupTestDirectory(testDirName)
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -70,7 +69,7 @@ func TestMain(m *testing.M) {
 
 	// Create common storage client to be used in test.
 	ctx = context.Background()
-	closeStorageClient := client.CreateStorageClientWithTimeOut(&ctx, &storageClient, time.Minute*15)
+	closeStorageClient := client.CreateStorageClientWithCancel(&ctx, &storageClient)
 	defer func() {
 		err := closeStorageClient()
 		if err != nil {

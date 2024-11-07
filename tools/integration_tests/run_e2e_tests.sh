@@ -31,7 +31,7 @@ RUN_TEST_ON_TPC_ENDPOINT=false
 if [ $4 != "" ]; then
   RUN_TEST_ON_TPC_ENDPOINT=$4
 fi
-INTEGRATION_TEST_TIMEOUT_IN_MINS=70
+INTEGRATION_TEST_TIMEOUT_IN_MINS=80
 
 RUN_TESTS_WITH_PRESUBMIT_FLAG=false
 if [ $# -ge 5 ] ; then
@@ -81,17 +81,12 @@ TEST_DIR_PARALLEL=(
   "kernel_list_cache"
   "concurrent_operations"
 )
+
 # These tests never become parallel as it is changing bucket permissions.
 TEST_DIR_NON_PARALLEL=(
   "readonly"
   "managed_folders"
   "readonly_creds"
-)
-
-
-TEST_DIR_HNS_GROUP=(
-  "implicit_dir"
-  "operations"
 )
 
 # Create a temporary file to store the log file name.
@@ -115,10 +110,11 @@ function upgrade_gcloud_version() {
 function install_packages() {
   # e.g. architecture=arm64 or amd64
   architecture=$(dpkg --print-architecture)
-  echo "Installing go-lang 1.22.4..."
-  wget -O go_tar.tar.gz https://go.dev/dl/go1.22.4.linux-${architecture}.tar.gz -q
+  echo "Installing go-lang 1.23.2..."
+  wget -O go_tar.tar.gz https://go.dev/dl/go1.23.2.linux-${architecture}.tar.gz -q
   sudo rm -rf /usr/local/go && tar -xzf go_tar.tar.gz && sudo mv go /usr/local
   export PATH=$PATH:/usr/local/go/bin
+  sudo apt-get install -y python3
   # install python3-setuptools tools.
   sudo apt-get install -y gcc python3-dev python3-setuptools
   # Downloading composite object requires integrity checking with CRC32c in gsutil.
@@ -251,19 +247,30 @@ function run_e2e_tests_for_flat_bucket() {
 }
 
 function run_e2e_tests_for_hns_bucket(){
-   hns_bucket_name=$(create_hns_bucket)
-   echo "Hns Bucket Created: "$hns_bucket_name
+   hns_bucket_name_parallel_group=$(create_hns_bucket)
+   echo "Hns Bucket Created: "$hns_bucket_name_parallel_group
+
+   hns_bucket_name_non_parallel_group=$(create_hns_bucket)
+   echo "Hns Bucket Created: "$hns_bucket_name_non_parallel_group
 
    echo "Running tests for HNS bucket"
-   run_non_parallel_tests TEST_DIR_HNS_GROUP "$hns_bucket_name"
+   run_parallel_tests TEST_DIR_PARALLEL "$hns_bucket_name_parallel_group" &
+   parallel_tests_hns_group_pid=$!
+   run_non_parallel_tests TEST_DIR_NON_PARALLEL "$hns_bucket_name_non_parallel_group" &
+   non_parallel_tests_hns_group_pid=$!
+
+   # Wait for all tests to complete.
+   wait $parallel_tests_hns_group_pid
+   parallel_tests_hns_group_exit_code=$?
+   wait $non_parallel_tests_hns_group_pid
    non_parallel_tests_hns_group_exit_code=$?
 
-   hns_buckets=("$hns_bucket_name")
+   hns_buckets=("$hns_bucket_name_parallel_group" "$hns_bucket_name_non_parallel_group")
    clean_up hns_buckets
 
-   if [ $non_parallel_tests_hns_group_exit_code != 0 ];
+   if [ $parallel_tests_hns_group_exit_code != 0 ] || [ $non_parallel_tests_hns_group_exit_code != 0 ];
    then
-     return 1
+    return 1
    fi
    return 0
 }

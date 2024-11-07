@@ -39,17 +39,57 @@ then
   UPLOAD_FLAGS="--upload_gs"
 fi
 
-GCSFUSE_FLAGS="--implicit-dirs  --debug_fuse --debug_gcs --log-format \"text\" "
-LOG_FILE_FIO_TESTS=${KOKORO_ARTIFACTS_DIR}/gcsfuse-logs.txt
-GCSFUSE_FIO_FLAGS="$GCSFUSE_FLAGS --log-file $LOG_FILE_FIO_TESTS --stackdriver-export-interval=30s"
+run_load_test_and_fetch_metrics(){
+  fio_flags=$1
+  gcsfuse_flags="$COMMON_MOUNT_FLAGS $fio_flags"
+  bucket_name=$2
+  spreadsheet_id=$3
+
+  # Executing perf tests
+  ./run_load_test_and_fetch_metrics.sh "$gcsfuse_flags" "$UPLOAD_FLAGS" "$bucket_name" "$spreadsheet_id"
+}
+
+run_ls_benchmark(){
+  ls_flags=$1
+  gcsfuse_flags="$COMMON_MOUNT_FLAGS $ls_flags"
+  spreadsheet_id="$2"
+  config_file="$3"
+
+  cd "./ls_metrics"
+  ./run_ls_benchmark.sh "$gcsfuse_flags" "$UPLOAD_FLAGS" "$spreadsheet_id" "$config_file"
+  cd "../"
+}
+
+COMMON_MOUNT_FLAGS="--debug_fuse --debug_gcs --log-format \"text\""
+
+# Testing for flat bucket.
+LOG_FILE_FIO_TESTS=${KOKORO_ARTIFACTS_DIR}/gcsfuse-logs-fio-flat.txt
+LOG_FILE_LS_TESTS=${KOKORO_ARTIFACTS_DIR}/gcsfuse-logs-ls-flat.txt
+GCSFUSE_FIO_FLAGS="--implicit-dirs --stackdriver-export-interval=30s --log-file $LOG_FILE_FIO_TESTS"
+GCSFUSE_LS_FLAGS="--implicit-dirs --log-file $LOG_FILE_LS_TESTS"
 BUCKET_NAME="periodic-perf-tests"
 SPREADSHEET_ID='1kvHv1OBCzr9GnFxRu9RTJC7jjQjc9M4rAiDnhyak2Sg'
+LIST_CONFIG_FILE="config.json"
+run_load_test_and_fetch_metrics "$GCSFUSE_FIO_FLAGS" "$BUCKET_NAME" "$SPREADSHEET_ID"
+run_ls_benchmark "$GCSFUSE_LS_FLAGS" "$SPREADSHEET_ID" "$LIST_CONFIG_FILE"
 
-# Executing perf tests
-./run_load_test_and_fetch_metrics.sh "$GCSFUSE_FIO_FLAGS" "$UPLOAD_FLAGS" "$BUCKET_NAME" "$SPREADSHEET_ID"
+# Testing for hns bucket.
+LOG_FILE_FIO_TESTS=${KOKORO_ARTIFACTS_DIR}/gcsfuse-logs-fio-hns.txt
+LOG_FILE_LS_TESTS=${KOKORO_ARTIFACTS_DIR}/gcsfuse-logs-ls-hns.txt
+GCSFUSE_FIO_FLAGS="--stackdriver-export-interval=30s --log-file $LOG_FILE_FIO_TESTS"
+GCSFUSE_LS_FLAGS="--log-file $LOG_FILE_LS_TESTS"
+BUCKET_NAME="periodic-perf-tests-hns"
+SPREADSHEET_ID='1wXRGYyAWvasU8U4KaP7NGPHEvgiOSgMd1sCLxsQUwf0'
+LIST_CONFIG_FILE="config-hns.json"
+run_load_test_and_fetch_metrics "$GCSFUSE_FIO_FLAGS" "$BUCKET_NAME" "$SPREADSHEET_ID"
+run_ls_benchmark "$GCSFUSE_LS_FLAGS" "$SPREADSHEET_ID" "$LIST_CONFIG_FILE"
 
-# ls_metrics test. This test does gcsfuse mount with the passed flags first and then does the testing.
-LOG_FILE_LIST_TESTS=${KOKORO_ARTIFACTS_DIR}/gcsfuse-list-logs.txt
-GCSFUSE_LIST_FLAGS="$GCSFUSE_FLAGS --log-file $LOG_FILE_LIST_TESTS"
-cd "./ls_metrics"
-./run_ls_benchmark.sh "$GCSFUSE_LIST_FLAGS" "$UPLOAD_FLAGS" "$SPREADSHEET_ID"
+#Running the rename benchmark script.
+cd "./hns_rename_folders_metrics"
+./run_rename_benchmark.sh $UPLOAD_FLAGS
+
+
+# TODO: Testing for hns bucket with client protocol set to grpc. To be done when
+#  includeFolderAsPrefixes is supported in grpc.
+# TODO: Testing for hns bucket with client protocol set to grpc with grpc-conn-pool-size
+# set to 4. To be done when includeFolderAsPrefixes is supported in grpc.

@@ -45,6 +45,8 @@ Typical usage example:
                           details of the tests.
 
 Note: This python script is dependent on generate_files.py.
+Note: This script currently skips folder with 1000000 files to facilitate periodic kokoro tests
+without timeout .To run that test case, run script with --run_1m_test flag.
 """
 
 import argparse
@@ -76,6 +78,7 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 log = logging.getLogger()
+RUN_1M_TEST=False
 
 WORKSHEET_NAME_GCS = 'ls_metrics_gcsfuse'
 WORKSHEET_NAME_PD = 'ls_metrics_persistent_disk'
@@ -119,6 +122,9 @@ def _get_values_to_export(folders, metrics, command) -> list:
 
   list_metrics_data = []
   for testing_folder in folders:
+    if not RUN_1M_TEST and testing_folder.name == "1KB_1000000files_0subdir":
+      # Excluding test case with 1m files from HNS in daily periodic tests.
+      continue
     num_files, num_folders = _count_number_of_files_and_folders(
         testing_folder, 0, 0)
     row = [
@@ -172,6 +178,9 @@ def _parse_results(folders, results_list, message, num_samples) -> dict:
   metrics = dict()
 
   for testing_folder in folders:
+    if not RUN_1M_TEST and testing_folder.name == "1KB_1000000files_0subdir":
+      # Excluding test case with 1m files from HNS in daily periodic tests.
+      continue
     metrics[testing_folder.name] = dict()
     metrics[testing_folder.name]['Test Desc.'] = message
     metrics[testing_folder.name]['Number of samples'] = num_samples
@@ -248,6 +257,10 @@ def _perform_testing(
   persistent_disk_results = {}
 
   for testing_folder in folders:
+    if not RUN_1M_TEST and testing_folder.name == "1KB_1000000files_0subdir":
+      # Excluding test case with 1m files from HNS in daily periodic tests.
+      continue
+
     log.info('Testing started for testing folder: %s\n', testing_folder.name)
     local_dir_path = './{}/{}/'.format(persistent_disk, testing_folder.name)
     gcs_bucket_path = './{}/{}/'.format(gcs_bucket, testing_folder.name)
@@ -302,6 +315,9 @@ def _create_directory_structure(
 
   result = 0
   for folder in directory_structure.folders:
+    if not RUN_1M_TEST and folder.name == "1KB_1000000files_0subdir":
+      # Excluding test case with 1m files from HNS in daily periodic tests.
+      continue
     result += _create_directory_structure(gcs_bucket_url + folder.name + '/',
                                           persistent_disk_url + folder.name + '/',
                                           folder, create_files_in_gcs)
@@ -359,6 +375,9 @@ def _compare_directory_structure(url, directory_structure) -> bool:
 
   result = True
   for folder in directory_structure.folders:
+    if not RUN_1M_TEST and folder.name == "1KB_1000000files_0subdir":
+      # Excluding test case with 1m files from HNS in daily periodic tests.
+      continue
     new_url = url + folder.name + '/'
     if new_url not in folders:
       return False
@@ -457,6 +476,14 @@ def _parse_arguments(argv):
       action='store',
       required=False,
   )
+
+  parser.add_argument(
+      '--run_1m_test',
+      help='Perform listing benchmark on 1m files directory? [True/False]',
+      action='store_true',
+      default=False,
+      required=False,
+  )
   # Ignoring the first parameter, as it is the path of this python
   # script itself.
   return parser.parse_args(argv[1:])
@@ -553,6 +580,7 @@ if __name__ == '__main__':
   gcs_bucket = mount_gcs_bucket(directory_structure.name,
                                 args.gcsfuse_flags[0],log)
 
+  RUN_1M_TEST=args.run_1m_test
   gcs_bucket_results, persistent_disk_results = _perform_testing(
       directory_structure.folders, gcs_bucket, persistent_disk,
       int(args.num_samples[0]), args.command[0])

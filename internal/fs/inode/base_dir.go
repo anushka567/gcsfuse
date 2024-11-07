@@ -199,8 +199,12 @@ func (d *baseDirInode) CreateChildFile(ctx context.Context, name string) (*Core,
 	return nil, fuse.ENOSYS
 }
 
-func (d *baseDirInode) CreateLocalChildFile(name string) (*Core, error) {
-	return nil, fuse.ENOSYS
+func (d *baseDirInode) InsertFileIntoTypeCache(_ string) {}
+
+func (d *baseDirInode) EraseFromTypeCache(_ string) {}
+
+func (d *baseDirInode) CreateLocalChildFileCore(_ string) (Core, error) {
+	return Core{}, fuse.ENOSYS
 }
 
 func (d *baseDirInode) CloneToChildFile(ctx context.Context, name string, src *gcs.MinObject) (*Core, error) {
@@ -227,7 +231,8 @@ func (d *baseDirInode) DeleteChildFile(
 func (d *baseDirInode) DeleteChildDir(
 	ctx context.Context,
 	name string,
-	isImplicitDir bool) (err error) {
+	isImplicitDir bool,
+	dirInode DirInode) (err error) {
 	err = fuse.ENOSYS
 	return
 }
@@ -249,4 +254,12 @@ func (d *baseDirInode) InvalidateKernelListCache() {}
 func (d *baseDirInode) RenameFolder(ctx context.Context, folderName string, destinationFolderId string) (op *gcs.Folder, err error) {
 	err = fuse.ENOSYS
 	return
+}
+
+// This operation is not supported on base_dir.
+func (d *baseDirInode) IsUnlinked() bool {
+	return false
+}
+
+func (d *baseDirInode) Unlink() {
 }
