@@ -45,7 +45,7 @@ cd ~/
 cp /details.txt .
 touch logs.txt
 touch logs-hns.txt
-touch logs-zonal.txt
+touch logs-zonal.txtl
 
 echo User: $USER &>> ~/logs.txt
 echo Current Working Directory: $(pwd)  &>> ~/logs.txt
@@ -327,7 +327,7 @@ function gather_test_logs() {
     if [ -f "$log_file" ]; then
       if [[ "$test_log_file" == *"hns"* ]]; then
         output_file="$HOME/logs-hns.txt"
-      else if [[ "$test_log_file" == *"zonal"* ]]; then
+      elif [[ "$test_log_file" == *"zonal"* ]]; then
         output_file="$HOME/logs-zonal.txt"
       else
         output_file="$HOME/logs.txt"
