@@ -293,7 +293,7 @@ function run_e2e_tests_for_zonal_bucket(){
   zonal_bucket_name_non_parallel=$(sed -n 3p ~/details.txt)
   echo "Zonal Bucket name to run tests sequentially: "$zonal_bucket_name_non_parallel
 
-  zonal_bucket_name_parallel=$(sed -n 3p ~/details.txt)-zonal-parallel
+  zonal_bucket_name_parallel=$(sed -n 3p ~/details.txt)-parallel
   echo "Zonal Bucket name to run tests parallelly: "$zonal_bucket_name_parallel
 
    echo "Running tests for Zonal bucket"
