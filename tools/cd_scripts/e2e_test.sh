@@ -289,7 +289,8 @@ function run_e2e_tests_for_hns_bucket(){
 }
 
 function run_e2e_tests_for_zonal_bucket(){
-  zonal_bucket_name_non_parallel=$(sed -n 3p ~/details.txt)-zonal
+  // The test VMs created for zonal buckets are named in a verbose manner.Hence, skipping zonal suffix.
+  zonal_bucket_name_non_parallel=$(sed -n 3p ~/details.txt)
   echo "Zonal Bucket name to run tests sequentially: "$zonal_bucket_name_non_parallel
 
   zonal_bucket_name_parallel=$(sed -n 3p ~/details.txt)-zonal-parallel
