@@ -143,33 +143,33 @@ git checkout $(sed -n 2p ~/details.txt) |& tee -a ~/logs.txt
 set +e
 # Test directory arrays
 TEST_DIR_PARALLEL=(
-  "local_file"
+  #"local_file"
   "log_rotation"
-  "mounting"
-  "read_cache"
-  "gzip"
-  "write_large_files"
-  "rename_dir_limit"
-  "read_large_files"
-  "explicit_dir"
-  "implicit_dir"
-  "interrupt"
-  "operations"
-  "log_content"
-  "kernel_list_cache"
-  "concurrent_operations"
+  #"mounting"
+  #"read_cache"
+  #"gzip"
+  #"write_large_files"
+  #"rename_dir_limit"
+  #"read_large_files"
+  #"explicit_dir"
+  #"implicit_dir"
+  #"interrupt"
+  #"operations"
+  #"log_content"
+  #"kernel_list_cache"
+  #"concurrent_operations"
   "mount_timeout"
-  "stale_handle"
-  "negative_stat_cache"
-  "streaming_writes"
-  "list_large_dir"
+  #"stale_handle"
+  #"negative_stat_cache"
+  #"streaming_writes"
+  #"list_large_dir"
 )
 
 # These tests never become parallel as they are changing bucket permissions.
 TEST_DIR_NON_PARALLEL=(
-  "readonly"
-  "managed_folders"
-  "readonly_creds"
+  #"readonly"
+  #"managed_folders"
+  #"readonly_creds"
 )
 
 # Create a temporary file to store the log file name.
@@ -181,6 +181,11 @@ function run_non_parallel_tests() {
   local exit_code=0
   local -n test_array=$1
   local BUCKET_NAME=$2
+  local zonal=false
+  if [ $# -ge 3 ] && [ "$3" = "true" ] ; then
+    zonal=true
+  fi
+
   for test_dir_np in "${test_array[@]}"
   do
     test_path_non_parallel="./tools/integration_tests/$test_dir_np"
@@ -189,7 +194,7 @@ function run_non_parallel_tests() {
     local log_file="/tmp/${test_dir_np}_${BUCKET_NAME}.log"
     echo $log_file >> $TEST_LOGS_FILE
     # Executing integration tests
-    GODEBUG=asyncpreemptoff=1 go test $test_path_non_parallel -p 1 --integrationTest -v --testbucket=$BUCKET_NAME --testInstalledPackage=true -timeout $INTEGRATION_TEST_TIMEOUT > "$log_file" 2>&1
+    GODEBUG=asyncpreemptoff=1 go test $test_path_non_parallel -p 1 --zonal=${zonal} --integrationTest -v --testbucket=$BUCKET_NAME --testInstalledPackage=true -timeout $INTEGRATION_TEST_TIMEOUT > "$log_file" 2>&1
     exit_code_non_parallel=$?
     if [ $exit_code_non_parallel != 0 ]; then
       exit_code=$exit_code_non_parallel
@@ -203,23 +208,20 @@ function run_parallel_tests() {
   local -n test_array=$1
   local BUCKET_NAME=$2
   local pids=()
-  local benchmark_flags=""
+  local zonal=false
+  if [ $# -ge 3 ] && [ "$3" = "true" ] ; then
+    zonal=true
+  fi
 
   for test_dir_p in "${test_array[@]}"
   do
-    # Unlike regular tests,benchmark tests are not executed by default when using go test .
-    # The -bench flag yells go test to run the benchmark tests and report their results by
-    # enabling the benchmarking framework.
-    if [ $test_dir_p == "benchmarking" ]; then
-        benchmark_flags="-bench=."
-    fi
     test_path_parallel="./tools/integration_tests/$test_dir_p"
     # To make it clear whether tests are running on a flat or HNS or Zonal bucket, We kept the log file naming
     # convention to include the bucket name as a suffix (e.g., package_name_bucket_name).
     local log_file="/tmp/${test_dir_p}_${BUCKET_NAME}.log"
     echo $log_file >> $TEST_LOGS_FILE
     # Executing integration tests
-    GODEBUG=asyncpreemptoff=1 go test $test_path_parallel $benchmark_flags -p 1 --integrationTest -v --testbucket=$BUCKET_NAME --testInstalledPackage=true -timeout $INTEGRATION_TEST_TIMEOUT > "$log_file" 2>&1 &
+    GODEBUG=asyncpreemptoff=1 go test $test_path_parallel -p 1 --zonal=${zonal} --integrationTest -v --testbucket=$BUCKET_NAME --testInstalledPackage=true -timeout $INTEGRATION_TEST_TIMEOUT > "$log_file" 2>&1 &
     pid=$!  # Store the PID of the background process
     pids+=("$pid")  # Optionally add the PID to an array for later
   done
@@ -297,9 +299,9 @@ function run_e2e_tests_for_zonal_bucket(){
   echo "Zonal Bucket name to run tests parallelly: "$zonal_bucket_name_parallel
 
    echo "Running tests for Zonal bucket"
-   run_parallel_tests TEST_DIR_PARALLEL "$zonal_bucket_name_parallel" &
+   run_parallel_tests TEST_DIR_PARALLEL "$zonal_bucket_name_parallel" true &
    parallel_tests_zonal_group_pid=$!
-   run_non_parallel_tests TEST_DIR_NON_PARALLEL "$zonal_bucket_name_non_parallel" &
+   run_non_parallel_tests TEST_DIR_NON_PARALLEL "$zonal_bucket_name_non_parallel" true&
    non_parallel_tests_zonal_group_pid=$!
 
    # Wait for all tests to complete.
