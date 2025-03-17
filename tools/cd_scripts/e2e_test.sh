@@ -141,8 +141,8 @@ git checkout $(sed -n 2p ~/details.txt) |& tee -a ~/logs.txt
 
 #run tests with testbucket flag
 set +e
-# Test directory arrays
-TEST_DIR_PARALLEL=(
+# For Zonal buckets : Test directory arrays
+TEST_DIR_PARALLEL_ZONAL=(
   #"local_file"
   "log_rotation"
   #"mounting"
@@ -165,11 +165,42 @@ TEST_DIR_PARALLEL=(
   #"list_large_dir"
 )
 
-# These tests never become parallel as they are changing bucket permissions.
-TEST_DIR_NON_PARALLEL=(
+#For Zonal Buckets :  These tests never become parallel as they are changing bucket permissions.
+TEST_DIR_NON_PARALLEL_ZONAL=(
   #"readonly"
   #"managed_folders"
   #"readonly_creds"
+)
+
+# Test directory arrays
+TEST_DIR_PARALLEL=(
+  "local_file"
+  "log_rotation"
+  "mounting"
+  "read_cache"
+  "gzip"
+  "write_large_files"
+  "rename_dir_limit"
+  "read_large_files"
+  "explicit_dir"
+  "implicit_dir"
+  "interrupt"
+  "operations"
+  "log_content"
+  "kernel_list_cache"
+  "concurrent_operations"
+  "mount_timeout"
+  "stale_handle"
+  "negative_stat_cache"
+  "streaming_writes"
+  "list_large_dir"
+)
+
+# These tests never become parallel as they are changing bucket permissions.
+TEST_DIR_NON_PARALLEL=(
+  "readonly"
+  "managed_folders"
+  "readonly_creds"
 )
 
 # Create a temporary file to store the log file name.
@@ -343,70 +374,83 @@ function gather_test_logs() {
   done
 }
 
-# echo "Running integration tests for HNS bucket..."
-# run_e2e_tests_for_hns_bucket &
-# e2e_tests_hns_bucket_pid=$!
+test_platform=$(sed -n 3p ~/details.txt)
+if [[ "$test_platform" =~ zonal ]]; then
+  echo "Running integration tests for Zonal bucket only..."
+  run_e2e_tests_for_zonal_bucket &
+  e2e_tests_zonal_bucket_pid=$!
 
-# echo "Running integration tests for FLAT bucket..."
-# run_e2e_tests_for_flat_bucket &
-# e2e_tests_flat_bucket_pid=$!
+  wait $e2e_tests_zonal_bucket_pid
+  e2e_tests_zonal_bucket_status=$?
 
-echo "Running integration tests for Zonal bucket..."
-run_e2e_tests_for_zonal_bucket &
-e2e_tests_zonal_bucket_pid=$!
+  gather_test_logs
+  
+  if [ $e2e_tests_zonal_bucket_status != 0 ];
+  then
+      echo "Test failures detected in Zonal bucket." &>> ~/logs-zonal.txt
+  else
+      touch success-zonal.txt
+      gsutil cp success-zonal.txt gs://gcsfuse-release-packages/v$(sed -n 1p ~/details.txt)/$(sed -n 3p ~/details.txt)/
+  fi
 
-# run_e2e_tests_for_emulator &
-# e2e_tests_emulator_pid=$!
+  gsutil cp ~/logs-zonal.txt gs://gcsfuse-release-packages/v$(sed -n 1p ~/details.txt)/$(sed -n 3p ~/details.txt)/
 
-# wait $e2e_tests_emulator_pid
-# e2e_tests_emulator_status=$?
-
-# wait $e2e_tests_flat_bucket_pid
-# e2e_tests_flat_bucket_status=$?
-
-# wait $e2e_tests_hns_bucket_pid
-# e2e_tests_hns_bucket_status=$?
-
-wait $e2e_tests_zonal_bucket_pid
-e2e_tests_zonal_bucket_status=$?
-
-
-gather_test_logs
-
-# if [ $e2e_tests_flat_bucket_status != 0 ]
-# then
-#     echo "Test failures detected in FLAT bucket." &>> ~/logs.txt
-# else
-#     touch success.txt
-#     gsutil cp success.txt gs://gcsfuse-release-packages/v$(sed -n 1p ~/details.txt)/$(sed -n 3p ~/details.txt)/
-# fi
-# gsutil cp ~/logs.txt gs://gcsfuse-release-packages/v$(sed -n 1p ~/details.txt)/$(sed -n 3p ~/details.txt)/
-
-# if [ $e2e_tests_hns_bucket_status != 0 ];
-# then
-#     echo "Test failures detected in HNS bucket." &>> ~/logs-hns.txt
-# else
-#     touch success-hns.txt
-#     gsutil cp success-hns.txt gs://gcsfuse-release-packages/v$(sed -n 1p ~/details.txt)/$(sed -n 3p ~/details.txt)/
-# fi
-# gsutil cp ~/logs-hns.txt gs://gcsfuse-release-packages/v$(sed -n 1p ~/details.txt)/$(sed -n 3p ~/details.txt)/
-
-# if [ $e2e_tests_emulator_status != 0 ];
-# then
-#     echo "Test failures detected in emulator based tests." &>> ~/logs-emulator.txt
-# else
-#     touch success-emulator.txt
-#     gsutil cp success-emulator.txt gs://gcsfuse-release-packages/v$(sed -n 1p ~/details.txt)/$(sed -n 3p ~/details.txt)/
-# fi
-
-# gsutil cp ~/logs-emulator.txt gs://gcsfuse-release-packages/v$(sed -n 1p ~/details.txt)/$(sed -n 3p ~/details.txt)/
-
-if [ $e2e_tests_zonal_bucket_status != 0 ];
-then
-    echo "Test failures detected in Zonal bucket." &>> ~/logs-zonal.txt
 else
-    touch success-zonal.txt
-    gsutil cp success-zonal.txt gs://gcsfuse-release-packages/v$(sed -n 1p ~/details.txt)/$(sed -n 3p ~/details.txt)/
+  echo "Running integration tests for HNS bucket..."
+  run_e2e_tests_for_hns_bucket &
+  e2e_tests_hns_bucket_pid=$!
+
+  echo "Running integration tests for FLAT bucket..."
+  run_e2e_tests_for_flat_bucket &
+  e2e_tests_flat_bucket_pid=$!
+
+  run_e2e_tests_for_emulator &
+  e2e_tests_emulator_pid=$!
+
+  wait $e2e_tests_emulator_pid
+  e2e_tests_emulator_status=$?
+
+  wait $e2e_tests_flat_bucket_pid
+  e2e_tests_flat_bucket_status=$?
+
+  wait $e2e_tests_hns_bucket_pid
+  e2e_tests_hns_bucket_status=$?
+
+  gather_test_logs
+
+  if [ $e2e_tests_flat_bucket_status != 0 ]
+  then
+      echo "Test failures detected in FLAT bucket." &>> ~/logs.txt
+  else
+      touch success.txt
+      gsutil cp success.txt gs://gcsfuse-release-packages/v$(sed -n 1p ~/details.txt)/$(sed -n 3p ~/details.txt)/
+  fi
+  gsutil cp ~/logs.txt gs://gcsfuse-release-packages/v$(sed -n 1p ~/details.txt)/$(sed -n 3p ~/details.txt)/
+
+  if [ $e2e_tests_hns_bucket_status != 0 ];
+  then
+      echo "Test failures detected in HNS bucket." &>> ~/logs-hns.txt
+  else
+      touch success-hns.txt
+      gsutil cp success-hns.txt gs://gcsfuse-release-packages/v$(sed -n 1p ~/details.txt)/$(sed -n 3p ~/details.txt)/
+  fi
+  gsutil cp ~/logs-hns.txt gs://gcsfuse-release-packages/v$(sed -n 1p ~/details.txt)/$(sed -n 3p ~/details.txt)/
+
+  if [ $e2e_tests_emulator_status != 0 ];
+  then
+      echo "Test failures detected in emulator based tests." &>> ~/logs-emulator.txt
+  else
+      touch success-emulator.txt
+      gsutil cp success-emulator.txt gs://gcsfuse-release-packages/v$(sed -n 1p ~/details.txt)/$(sed -n 3p ~/details.txt)/
+  fi
+  gsutil cp ~/logs-emulator.txt gs://gcsfuse-release-packages/v$(sed -n 1p ~/details.txt)/$(sed -n 3p ~/details.txt)/
+
 fi
-gsutil cp ~/logs-zonal.txt gs://gcsfuse-release-packages/v$(sed -n 1p ~/details.txt)/$(sed -n 3p ~/details.txt)/
+
+
+
+
+
+
+
 '
