@@ -18,7 +18,8 @@ set -x
 # Exit immediately if a command exits with a non-zero status.
 set -e
 
-RUN_E2E_TESTS_FOR_ZB_ONLY=$1 # true means e2e tests for zonal only, else for flat and hns
+RUN_E2E_TESTS_FOR_ZB_ONLY=$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/metadata/run-on-zb-only)
+echo $RUN_E2E_TESTS_FOR_ZB_ONLY
 
 #details.txt file contains the release version and commit hash of the current release.
 gsutil cp  gs://gcsfuse-release-packages/version-detail/details.txt .
