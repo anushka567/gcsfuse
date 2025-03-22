@@ -18,6 +18,8 @@ set -x
 # Exit immediately if a command exits with a non-zero status.
 set -e
 
+RUN_E2E_TESTS_FOR_ZB_ONLY=$1 # true means e2e tests for zonal only, else for flat and hns
+
 #details.txt file contains the release version and commit hash of the current release.
 gsutil cp  gs://gcsfuse-release-packages/version-detail/details.txt .
 # Writing VM instance name to details.txt (Format: release-test-<os-name>)
@@ -374,8 +376,7 @@ function gather_test_logs() {
   done
 }
 
-test_platform=$(sed -n 3p ~/details.txt)
-if [[ "$test_platform" =~ zonal ]]; then
+if [[ "$RUN_E2E_TESTS_FOR_ZB_ONLY" == "true" ]]; then
   echo "Running integration tests for Zonal bucket only..."
   run_e2e_tests_for_zonal_bucket &
   e2e_tests_zonal_bucket_pid=$!
@@ -394,7 +395,6 @@ if [[ "$test_platform" =~ zonal ]]; then
   fi
 
   gsutil cp ~/logs-zonal.txt gs://gcsfuse-release-packages/v$(sed -n 1p ~/details.txt)/$(sed -n 3p ~/details.txt)/
-
 else
   echo "Running integration tests for HNS bucket..."
   run_e2e_tests_for_hns_bucket &
