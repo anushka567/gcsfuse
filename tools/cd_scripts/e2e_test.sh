@@ -18,7 +18,10 @@ set -x
 # Exit immediately if a command exits with a non-zero status.
 set -e
 
-RUN_E2E_TESTS_FOR_ZB_ONLY=$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/metadata/run-on-zb-only)
+ZONE=$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/zone)
+ZONE_NAME=$(basename $ZONE)
+
+RUN_E2E_TESTS_FOR_ZB_ONLY=$(gcloud compute instances describe "$HOSTNAME" --zone="$ZONE_NAME" --format='get(metadata.run-on-zb-only)')
 echo $RUN_E2E_TESTS_FOR_ZB_ONLY
 
 #details.txt file contains the release version and commit hash of the current release.
