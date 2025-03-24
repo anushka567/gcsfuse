@@ -18,11 +18,12 @@ set -x
 # Exit immediately if a command exits with a non-zero status.
 set -e
 
+# Extract the metadata parameters passed
+# First , we need to extract the GCE VM Zone.
 ZONE=$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/zone)
 ZONE_NAME=$(basename $ZONE)
-
 RUN_E2E_TESTS_FOR_ZB_ONLY=$(gcloud compute instances describe "$HOSTNAME" --zone="$ZONE_NAME" --format='get(metadata.run-on-zb-only)')
-echo $RUN_E2E_TESTS_FOR_ZB_ONLY
+echo "Running tests for zonal buckets only? : $RUN_E2E_TESTS_FOR_ZB_ONLY"
 
 #details.txt file contains the release version and commit hash of the current release.
 gsutil cp  gs://gcsfuse-release-packages/version-detail/details.txt .
@@ -51,10 +52,15 @@ cd ~/
 cp /details.txt .
 touch logs.txt
 touch logs-hns.txt
-touch logs-zonal.txtl
+touch logs-zonal.txt
 
-echo User: $USER &>> ~/logs.txt
-echo Current Working Directory: $(pwd)  &>> ~/logs.txt
+if [[ "$RUN_E2E_TESTS_FOR_ZB_ONLY" == "true" ]]; then
+  echo User: $USER &>> ~/logs-zonal.txt
+  echo Current Working Directory: $(pwd)  &>> ~/logs-zonal.txt
+else 
+  echo User: $USER &>> ~/logs.txt
+  echo Current Working Directory: $(pwd)  &>> ~/logs.txt
+fi
 
 # Based on the os type in detail.txt, run the following commands for setup
 
@@ -119,7 +125,7 @@ else
 fi
 
 # install go
-wget -O go_tar.tar.gz https://go.dev/dl/go1.23.5.linux-${architecture}.tar.gz
+wget -O go_tar.tar.gz https://go.dev/dl/go1.24.0.linux-${architecture}.tar.gz
 sudo tar -C /usr/local -xzf go_tar.tar.gz
 export PATH=${PATH}:/usr/local/go/bin
 #Write gcsfuse and go version to log file
@@ -128,7 +134,7 @@ go version |& tee -a ~/logs.txt
 
 # Clone and checkout gcsfuse repo
 export PATH=${PATH}:/usr/local/go/bin
-git clone https://github.com/anushka567/gcsfuse |& tee -a ~/logs.txt
+git clone https://github.com/googlecloudplatform/gcsfuse |& tee -a ~/logs.txt
 cd gcsfuse
 
 # Installation of crcmod is working through pip only on rhel and centos.
@@ -147,6 +153,39 @@ git checkout $(sed -n 2p ~/details.txt) |& tee -a ~/logs.txt
 
 #run tests with testbucket flag
 set +e
+# Test directory arrays
+TEST_DIR_PARALLEL=(
+  "monitoring"
+  "local_file"
+  "log_rotation"
+  "mounting"
+  "read_cache"
+  "gzip"
+  "write_large_files"
+  "rename_dir_limit"
+  "read_large_files"
+  "explicit_dir"
+  "implicit_dir"
+  "interrupt"
+  "operations"
+  "log_content"
+  "kernel_list_cache"
+  "concurrent_operations"
+  "mount_timeout"
+  "stale_handle"
+  "stale_handle_streaming_writes"
+  "negative_stat_cache"
+  "streaming_writes"
+)
+
+# These tests never become parallel as they are changing bucket permissions.
+TEST_DIR_NON_PARALLEL=(
+  "readonly"
+  "managed_folders"
+  "readonly_creds"
+  "list_large_dir"
+)
+
 # For Zonal buckets : Test directory arrays
 TEST_DIR_PARALLEL_ZONAL=(
   #"local_file"
@@ -178,37 +217,6 @@ TEST_DIR_NON_PARALLEL_ZONAL=(
   #"readonly_creds"
 )
 
-# Test directory arrays
-TEST_DIR_PARALLEL=(
-  "local_file"
-  "log_rotation"
-  "mounting"
-  "read_cache"
-  "gzip"
-  "write_large_files"
-  "rename_dir_limit"
-  "read_large_files"
-  "explicit_dir"
-  "implicit_dir"
-  "interrupt"
-  "operations"
-  "log_content"
-  "kernel_list_cache"
-  "concurrent_operations"
-  "mount_timeout"
-  "stale_handle"
-  "negative_stat_cache"
-  "streaming_writes"
-  "list_large_dir"
-)
-
-# These tests never become parallel as they are changing bucket permissions.
-TEST_DIR_NON_PARALLEL=(
-  "readonly"
-  "managed_folders"
-  "readonly_creds"
-)
-
 # Create a temporary file to store the log file name.
 TEST_LOGS_FILE=$(mktemp)
 
@@ -218,15 +226,11 @@ function run_non_parallel_tests() {
   local exit_code=0
   local -n test_array=$1
   local BUCKET_NAME=$2
-  local zonal=false
-  if [ $# -ge 3 ] && [ "$3" = "true" ] ; then
-    zonal=true
-  fi
-
+  local zonal=$3
   for test_dir_np in "${test_array[@]}"
   do
     test_path_non_parallel="./tools/integration_tests/$test_dir_np"
-    # To make it clear whether tests are running on a flat or HNS or Zonal bucket, We kept the log file naming
+    # To make it clear whether tests are running on a flat or HNS or zonal bucket, We kept the log file naming
     # convention to include the bucket name as a suffix (e.g., package_name_bucket_name).
     local log_file="/tmp/${test_dir_np}_${BUCKET_NAME}.log"
     echo $log_file >> $TEST_LOGS_FILE
@@ -244,21 +248,25 @@ function run_parallel_tests() {
   local exit_code=0
   local -n test_array=$1
   local BUCKET_NAME=$2
+  local zonal=$3
   local pids=()
-  local zonal=false
-  if [ $# -ge 3 ] && [ "$3" = "true" ] ; then
-    zonal=true
-  fi
+  local benchmark_flags=""
 
   for test_dir_p in "${test_array[@]}"
   do
+    # Unlike regular tests,benchmark tests are not executed by default when using go test .
+    # The -bench flag yells go test to run the benchmark tests and report their results by
+    # enabling the benchmarking framework.
+    if [ $test_dir_p == "benchmarking" ]; then
+        benchmark_flags="-bench=."
+    fi
     test_path_parallel="./tools/integration_tests/$test_dir_p"
-    # To make it clear whether tests are running on a flat or HNS or Zonal bucket, We kept the log file naming
+    # To make it clear whether tests are running on a flat or HNS bucket, We kept the log file naming
     # convention to include the bucket name as a suffix (e.g., package_name_bucket_name).
     local log_file="/tmp/${test_dir_p}_${BUCKET_NAME}.log"
     echo $log_file >> $TEST_LOGS_FILE
     # Executing integration tests
-    GODEBUG=asyncpreemptoff=1 go test $test_path_parallel -p 1 --zonal=${zonal} --integrationTest -v --testbucket=$BUCKET_NAME --testInstalledPackage=true -timeout $INTEGRATION_TEST_TIMEOUT > "$log_file" 2>&1 &
+    GODEBUG=asyncpreemptoff=1 go test $test_path_parallel $benchmark_flags -p 1 --zonal=${zonal} --integrationTest -v --testbucket=$BUCKET_NAME --testInstalledPackage=true -timeout $INTEGRATION_TEST_TIMEOUT > "$log_file" 2>&1 &
     pid=$!  # Store the PID of the background process
     pids+=("$pid")  # Optionally add the PID to an array for later
   done
@@ -281,11 +289,11 @@ function run_e2e_tests_for_flat_bucket() {
   echo "Flat Bucket name to run tests parallelly: "$flat_bucket_name_parallel
 
   echo "Running parallel tests..."
-  run_parallel_tests TEST_DIR_PARALLEL "$flat_bucket_name_parallel" &
+  run_parallel_tests TEST_DIR_PARALLEL "$flat_bucket_name_parallel" false &
   parallel_tests_pid=$!
 
  echo "Running non parallel tests ..."
- run_non_parallel_tests TEST_DIR_NON_PARALLEL "$flat_bucket_name_non_parallel" &
+ run_non_parallel_tests TEST_DIR_NON_PARALLEL "$flat_bucket_name_non_parallel" false &
  non_parallel_tests_pid=$!
 
  # Wait for all tests to complete.
@@ -309,9 +317,9 @@ function run_e2e_tests_for_hns_bucket(){
   echo "HNS Bucket name to run tests parallelly: "$hns_bucket_name_parallel
 
    echo "Running tests for HNS bucket"
-   run_parallel_tests TEST_DIR_PARALLEL "$hns_bucket_name_parallel" &
+   run_parallel_tests TEST_DIR_PARALLEL "$hns_bucket_name_parallel" false &
    parallel_tests_hns_group_pid=$!
-   run_non_parallel_tests TEST_DIR_NON_PARALLEL "$hns_bucket_name_non_parallel" &
+   run_non_parallel_tests TEST_DIR_NON_PARALLEL "$hns_bucket_name_non_parallel" false &
    non_parallel_tests_hns_group_pid=$!
 
    # Wait for all tests to complete.
@@ -328,31 +336,31 @@ function run_e2e_tests_for_hns_bucket(){
 }
 
 function run_e2e_tests_for_zonal_bucket(){
-  // The test VMs created for zonal buckets are named in a verbose manner.Hence, skipping zonal suffix.
-  zonal_bucket_name_non_parallel=$(sed -n 3p ~/details.txt)
+  zonal_bucket_name_non_parallel=$(sed -n 3p ~/details.txt)-zonal
   echo "Zonal Bucket name to run tests sequentially: "$zonal_bucket_name_non_parallel
 
-  zonal_bucket_name_parallel=$(sed -n 3p ~/details.txt)-parallel
-  echo "Zonal Bucket name to run tests parallelly: "$zonal_bucket_name_parallel
+  zonal_bucket_name_parallel=$(sed -n 3p ~/details.txt)-zonal-parallel
+  echo "Zonal Bucket name to run tests parallely: "$zonal_bucket_name_parallel
 
-   echo "Running tests for Zonal bucket"
-   run_parallel_tests TEST_DIR_PARALLEL "$zonal_bucket_name_parallel" true &
-   parallel_tests_zonal_group_pid=$!
-   run_non_parallel_tests TEST_DIR_NON_PARALLEL "$zonal_bucket_name_non_parallel" true&
-   non_parallel_tests_zonal_group_pid=$!
+  echo "Running tests for Zonal bucket"
+  run_parallel_tests TEST_DIR_PARALLEL_ZONAL "$zonal_bucket_name_parallel" true &
+  parallel_tests_zonal_group_pid=$!
+  run_non_parallel_tests TEST_DIR_NON_PARALLEL_ZONAL "$zonal_bucket_name_non_parallel" true &
+  non_parallel_tests_zonal_group_pid=$!
 
-   # Wait for all tests to complete.
-   wait $parallel_tests_zonal_group_pid
-   parallel_tests_zonal_group_exit_code=$?
-   wait $non_parallel_tests_zonal_group_pid
-   non_parallel_tests_zonal_group_exit_code=$?
+  # Wait for all tests to complete.
+  wait $parallel_tests_zonal_group_pid
+  parallel_tests_zonal_group_exit_code=$?
+  wait $non_parallel_tests_zonal_group_pid
+  non_parallel_tests_zonal_group_exit_code=$?
 
-   if [ $parallel_tests_zonal_group_exit_code != 0 ] || [ $non_parallel_tests_zonal_group_exit_code != 0 ];
-   then
-    return 1
-   fi
-   return 0
+  if [ $parallel_tests_zonal_group_exit_code != 0 ] || [ $non_parallel_tests_zonal_group_exit_code != 0 ];
+  then
+  return 1
+  fi
+  return 0
 }
+
 
 function run_e2e_tests_for_emulator() {
   ./tools/integration_tests/emulator_tests/emulator_tests.sh true > ~/logs-emulator.txt
@@ -447,14 +455,8 @@ else
       touch success-emulator.txt
       gsutil cp success-emulator.txt gs://gcsfuse-release-packages/v$(sed -n 1p ~/details.txt)/$(sed -n 3p ~/details.txt)/
   fi
+
   gsutil cp ~/logs-emulator.txt gs://gcsfuse-release-packages/v$(sed -n 1p ~/details.txt)/$(sed -n 3p ~/details.txt)/
-
 fi
-
-
-
-
-
-
-
+  
 '
