@@ -18,13 +18,13 @@ set -x
 # Exit immediately if a command exits with a non-zero status.
 set -e
 
-# Extract the metadata parameters passed, for which we need the zone of the GCE VM 
+# Extract the metadata parameters passed, for which we need the zone of the GCE VM
 # on which the tests are supposed to run.
 ZONE=$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/zone)
 echo "Got ZONE=\"${ZONE}\" from metadata server."
 # The format for the above extracted zone is projects/{project-id}/zones/{zone}, thus, from this
 # need extracted zone name.
-ZONE_NAME=$(basename $ZONE)
+ZONE_NAME=$(basename "$ZONE")
 # This parameter is passed as the GCE VM metadata at the time of creation.(Logic is handled in louhi stage script)
 RUN_ON_ZB_ONLY=$(gcloud compute instances describe "$HOSTNAME" --zone="$ZONE_NAME" --format='get(metadata.run-on-zb-only)')
 RUN_READ_CACHE_TESTS_ONLY=$(gcloud compute instances describe "$HOSTNAME" --zone="$ZONE_NAME" --format='get(metadata.run-read-cache-only)')
@@ -32,36 +32,35 @@ echo "RUN_ON_ZB_ONLY flag set to : \"${RUN_ON_ZB_ONLY}\""
 echo "RUN_READ_CACHE_TESTS_ONLY flag set to : \"${RUN_READ_CACHE_TESTS_ONLY}\""
 
 #details.txt file contains the release version and commit hash of the current release.
-gcloud storage cp  gs://gcsfuse-release-packages/version-detail/details.txt .
+gcloud storage cp gs://gcsfuse-release-packages/version-detail/details.txt .
 # Writing VM instance name to details.txt (Format: release-test-<os-name>)
-curl http://metadata.google.internal/computeMetadata/v1/instance/name -H "Metadata-Flavor: Google" >> details.txt
+curl http://metadata.google.internal/computeMetadata/v1/instance/name -H "Metadata-Flavor: Google" >>details.txt
 
-# Based on the os type(from vm instance name) in detail.txt, run the following commands to add starterscriptuser
-if grep -q ubuntu details.txt || grep -q debian details.txt;
-then
-#  For ubuntu and debian os
-    sudo adduser --ingroup google-sudoers --disabled-password --home=/home/starterscriptuser --gecos "" starterscriptuser
+# Based on the os type(from vm instance name) in detail.txt, run the following commands to add su2
+if grep -q ubuntu details.txt || grep -q debian details.txt; then
+	#  For ubuntu and debian os
+	sudo adduser --ingroup google-sudoers --disabled-password --home=/home/su2 --gecos "" su2
 else
-#  For rhel and centos
-    sudo adduser -g google-sudoers --home-dir=/home/starterscriptuser starterscriptuser
+	#  For rhel and centos
+	sudo adduser -g google-sudoers --home-dir=/home/su2 su2
 fi
 
-# Run the following as starterscriptuser
-sudo -u starterscriptuser bash -c '
+# Run the following as su2
+sudo -u su2 bash -c '
 # Exit immediately if a command exits with a non-zero status.
 set -e
 # Print commands and their arguments as they are executed.
 set -x
 
-# Export the RUN_ON_ZB_ONLY variable so that it is available in the environment of the 'starterscriptuser' user.
-# Since we are running the subsequent script as 'starterscriptuser' using sudo, the environment of 'starterscriptuser' 
+# Export the RUN_ON_ZB_ONLY variable so that it is available in the environment of the 'su2' user.
+# Since we are running the subsequent script as 'su2' using sudo, the environment of 'su2' 
 # would not automatically have access to the environment variables set by the original user (i.e. $RUN_ON_ZB_ONLY).
-# By exporting this variable, we ensure that the value of RUN_ON_ZB_ONLY is passed into the 'starterscriptuser' script 
+# By exporting this variable, we ensure that the value of RUN_ON_ZB_ONLY is passed into the 'su2' script 
 # and can be used for conditional logic or decisions within that script.
 export RUN_ON_ZB_ONLY='$RUN_ON_ZB_ONLY'
 export RUN_READ_CACHE_TESTS_ONLY='$RUN_READ_CACHE_TESTS_ONLY'
 
-#Copy details.txt to starterscriptuser home directory and create logs.txt
+#Copy details.txt to su2 home directory and create logs.txt
 cd ~/
 cp /details.txt .
 touch logs.txt
@@ -251,6 +250,7 @@ function run_parallel_tests() {
   done
   return $exit_code
 }
+
 function run_e2e_tests() {
   testcase= $1 // hns/flat/zonal/emulator
   test_dir_parallel=$2
@@ -277,8 +277,12 @@ function run_e2e_tests() {
   wait $non_parallel_tests_pid
   non_parallel_tests_exit_code=$?
 
-  if [ $non_parallel_tests_exit_code != 0 ] || [ $parallel_tests_exit_code != 0 ]; then
-   return 1
+  if [ $non_parallel_tests_exit_code != 0 ]; then
+    return $non_parallel_tests_exit_code
+  fi
+
+  if [ $parallel_tests_exit_code != 0 ]; then
+    return $parallel_tests_exit_code
   fi
 }
 
@@ -332,27 +336,57 @@ function wait_on_pid_and_log(declare -A testcase_pids){
 }
 
 
-function run_tests_and_return_pid() {
+func log_based_on_exit_status(){
+  gather_test_logs
+  local -n exit_status_array=$1
+  for testcase in "${!exit_status_array[@]}"
+    do
+        if [ "${exit_status_array["$testcase"]}" != 0 ];
+        then 
+            echo "Test failures detected in $testcase bucket." &>> ~/logs-$testcase.txt
+        else
+            touch success-$testcase.txt
+            gcloud storage cp success-$testcase.txt gs://gcsfuse-release-packages/v${RELEASEVERSION}/ubuntu-vm/
+        fi
+
+    done
+
+}
+
+function run_tests_in_foreground_and_return_exit_code() {
     testcase=$1
     test_dir_parallel=$2
     test_dir_non_parallel=$3
     zonal=$4
-    run_in=$5 # fg or bg
-    
-    if [ $run_in == "fg"];
-    then
-        run_e2e_tests $testcase $test_dir_parallel $test_dir_non_parallel $zonal 
-    else
-        run_e2e_tests $testcase $test_dir_parallel $test_dir_non_parallel $zonal &
-    fi 
-    
+
+    run_e2e_tests $testcase $test_dir_parallel $test_dir_non_parallel $zonal 
+    e2e_tests_exit_code=$?
+    return $e2e_tests_exit_code
+}
+
+# if I dont use it here, then wait will make it blocking
+function run_tests_in_background_and_return_pid(){
+    testcase=$1
+    test_dir_parallel=$2
+    test_dir_non_parallel=$3
+    zonal=$4
+
+    run_e2e_tests $testcase $test_dir_parallel $test_dir_non_parallel $zonal &
     e2e_tests_pid=$!
-    echo $e2e_tests_pid
+    return $e2e_tests_pid
 }
 
 
-
-
+function return_exit_status_for_pid(){
+  local -n testcase_pid=$1
+  local -n testcase_status=$2
+  for scenario in "${testcase_pid[@]}"; do
+    local pid=${testcase_pid[$scenario]}
+    wait $pid
+    testcase_status=$?
+  done
+  
+}
 
 function run_e2e_tests_for_emulator_and_log() {
   ./tools/integration_tests/emulator_tests/emulator_tests.sh true > ~/logs-emulator.txt
@@ -371,25 +405,38 @@ function run_e2e_tests_for_emulator_and_log() {
 if [[ "$RUN_READ_CACHE_TESTS_ONLY" == "true" ]]; then
     test_dir_parallel = ()
     test_dir_non_parallel = ("read_cache")
-    declare -A testcase_pids
-    testcase_pids["flat"]=$(run_tests_and_return_pid "flat" $test_dir_parallel $test_dir_non_parallel false "fg")
-    testcase_pids["hns"]=$(run_tests_and_return_pid "hns" $test_dir_parallel $test_dir_non_parallel false "fg")
-    testcase_pids["zonal"]=$(run_tests_and_return_pid "zonal" $test_dir_parallel $test_dir_non_parallel true "fg")
+    declare -A exit_status
+    run_tests_in_foreground_and_return_exit_code "flat" $test_dir_parallel $test_dir_non_parallel false 
+    exit_status["flat"]=$?
+    run_tests_in_foreground_and_return_exit_code "hns" $test_dir_parallel $test_dir_non_parallel false 
+    exit_status["hns"]=$?
+    run_tests_in_foreground_and_return_exit_code "zonal" $test_dir_parallel $test_dir_non_parallel true 
+    exit_status["zonal"]=$?
     
-    wait_on_pid_and_log $testcase_pids
+    log_based_on_exit_status $exit_status
+  
 
 else   
     test_dir_parallel = $TEST_DIR_PARALLEL
     test_dir_non_parallel = $TEST_DIR_NON_PARALLEL
     if [[ "$RUN_ON_ZB_ONLY" == "true"]]; then
-        declare -A testcase_pids
-        testcase_pids["zonal"]=$(run_tests_and_return_pid "zonal" $test_dir_parallel $test_dir_non_parallel true "fg")
-        wait_on_pid_and_log $testcase_pids
+        declare -A exit_status
+        run_tests_in_foreground_and_return_exit_code "zonal" $test_dir_parallel $test_dir_non_parallel true 
+        exit_status["zonal"]=$?
+    
+        log_based_on_exit_status $exit_status
     else
         declare -A testcase_pids
-        testcase_pids["flat"]=$(run_tests_and_return_pid "flat" $test_dir_parallel $test_dir_non_parallel false "bg")
-        testcase_pids["hns"]=$(run_tests_and_return_pid "hns" $test_dir_parallel $test_dir_non_parallel false "bg")
-        wait_on_pid_and_log $testcase_pids
+        declare -A exit_status
+        run_tests_in_background_and_return_pid "flat" $test_dir_parallel $test_dir_non_parallel false 
+        testcase_pid["flat"]=$?
+        run_tests_in_background_and_return_pid "hns" $test_dir_parallel $test_dir_non_parallel false 
+        testcase_pid["hns"]=$?
+
+        return_exit_status_for_pid testcase_pids exit_status
+        
+        log_based_on_exit_status $exit_status
+
         run_e2e_tests_for_emulator_and_log
     fi
 
