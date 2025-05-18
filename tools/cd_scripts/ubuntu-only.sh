@@ -32,52 +32,29 @@ echo "RUN_ON_ZB_ONLY flag set to : \"${RUN_ON_ZB_ONLY}\""
 echo "RUN_READ_CACHE_TESTS_ONLY flag set to : \"${RUN_READ_CACHE_TESTS_ONLY}\""
 
 
-# Logging the tests being run on the active GCE VM
-if [[ "$RUN_ON_ZB_ONLY" == "true" ]]; then
-  echo "Running integration tests for Zonal bucket only..."
-else
-  echo "Running integration tests for non-zonal buckets only..."
-fi
+# Based on the os type(from vm instance name) in detail.txt, run the following commands to add su5
+sudo adduser --ingroup google-sudoers --disabled-password --home=/home/su5 --gecos "" su5
 
-# Logging the tests being run on the active GCE VM
-if [[ "$RUN_READ_CACHE_TESTS_ONLY" == "true" ]]; then
-  echo "Running read cache test only..."
-fi
-
-
-#details.txt file contains the release version and commit hash of the current release.
-gcloud storage cp  gs://gcsfuse-release-packages/version-detail/details.txt .
-# Writing VM instance name to details.txt (Format: release-test-<os-name>)
-curl http://metadata.google.internal/computeMetadata/v1/instance/name -H "Metadata-Flavor: Google" >> details.txt
-
-# Based on the os type(from vm instance name) in detail.txt, run the following commands to add starterscriptuser
-if grep -q ubuntu details.txt || grep -q debian details.txt;
-then
-#  For ubuntu and debian os
-    sudo adduser --ingroup google-sudoers --disabled-password --home=/home/starterscriptuser --gecos "" starterscriptuser
-else
-#  For rhel and centos
-    sudo adduser -g google-sudoers --home-dir=/home/starterscriptuser starterscriptuser
-fi
-
-# Run the following as starterscriptuser
-sudo -u starterscriptuser bash -c '
+# Run the following as su5
+sudo -u su5 bash -c '
 # Exit immediately if a command exits with a non-zero status.
 set -e
 # Print commands and their arguments as they are executed.
 set -x
 
-# Export the RUN_ON_ZB_ONLY variable so that it is available in the environment of the 'starterscriptuser' user.
-# Since we are running the subsequent script as 'starterscriptuser' using sudo, the environment of 'starterscriptuser' 
+# Export the RUN_ON_ZB_ONLY variable so that it is available in the environment of the 'su5' user.
+# Since we are running the subsequent script as 'su5' using sudo, the environment of 'su5' 
 # would not automatically have access to the environment variables set by the original user (i.e. $RUN_ON_ZB_ONLY).
-# By exporting this variable, we ensure that the value of RUN_ON_ZB_ONLY is passed into the 'starterscriptuser' script 
+# By exporting this variable, we ensure that the value of RUN_ON_ZB_ONLY is passed into the 'su5' script 
 # and can be used for conditional logic or decisions within that script.
 export RUN_ON_ZB_ONLY='$RUN_ON_ZB_ONLY'
 export RUN_READ_CACHE_TESTS_ONLY='$RUN_READ_CACHE_TESTS_ONLY'
 
-#Copy details.txt to starterscriptuser home directory and create logs.txt
+RELEASEVERSION=500.0.0
+COMMITHASH=25bce721fa383479979f4a33e6693a5d07c3034c
+
+#Copy details.txt to su5 home directory and create logs.txt
 cd ~/
-cp /details.txt .
 touch logs.txt
 touch logs-hns.txt
 touch logs-zonal.txt
@@ -93,65 +70,35 @@ echo "Current Working Directory: $(pwd)"  &>> ${LOG_FILE}
 
 # Based on the os type in detail.txt, run the following commands for setup
 
-if grep -q ubuntu details.txt || grep -q debian details.txt;
-then
+
 #  For Debian and Ubuntu os
-    # architecture can be amd64 or arm64
-    architecture=$(dpkg --print-architecture)
+# architecture can be amd64 or arm64
+architecture=$(dpkg --print-architecture)
 
-    sudo apt update
+sudo apt update
 
-    #Install fuse
-    sudo apt install -y fuse
+#Install fuse
+sudo apt install -y fuse
 
-    # download and install gcsfuse deb package
-    gcloud storage cp gs://gcsfuse-release-packages/v$(sed -n 1p details.txt)/gcsfuse_$(sed -n 1p details.txt)_${architecture}.deb .
-    sudo dpkg -i gcsfuse_$(sed -n 1p details.txt)_${architecture}.deb |& tee -a ${LOG_FILE}
+# download and install gcsfuse deb package
+gcloud storage cp gs://gcsfuse-release-packages/v${RELEASEVERSION}/gcsfuse_${RELEASEVERSION}_${architecture}.deb .
+sudo dpkg -i gcsfuse_${RELEASEVERSION}_${architecture}.deb |& tee -a ${LOG_FILE}
 
-    # install wget
-    sudo apt install -y wget
+# install wget
+sudo apt install -y wget
 
-    #install git
-    sudo apt install -y git
+#install git
+sudo apt install -y git
 
-   # install python3-setuptools tools.
-   sudo apt-get install -y gcc python3-dev python3-setuptools
-   # Downloading composite object requires integrity checking with CRC32c in gsutil.
-   # it requires to install crcmod.
-   sudo apt install -y python3-crcmod
+# install python3-setuptools tools.
+sudo apt-get install -y gcc python3-dev python3-setuptools
+# Downloading composite object requires integrity checking with CRC32c in gsutil.
+# it requires to install crcmod.
+sudo apt install -y python3-crcmod
 
-    #install build-essentials
-    sudo apt install -y build-essential
-else
-#  For rhel and centos
-    # uname can be aarch or x86_64
-    uname=$(uname -i)
+#install build-essentials
+sudo apt install -y build-essential
 
-    if [[ $uname == "x86_64" ]]; then
-      architecture="amd64"
-    elif [[ $uname == "aarch64" ]]; then
-      architecture="arm64"
-    fi
-
-    sudo yum makecache
-    sudo yum -y update
-
-    #Install fuse
-    sudo yum -y install fuse
-
-    #download and install gcsfuse rpm package
-    gcloud storage cp gs://gcsfuse-release-packages/v$(sed -n 1p details.txt)/gcsfuse-$(sed -n 1p details.txt)-1.${uname}.rpm .
-    sudo yum -y localinstall gcsfuse-$(sed -n 1p details.txt)-1.${uname}.rpm
-
-    #install wget
-    sudo yum -y install wget
-
-    #install git
-    sudo yum -y install git
-
-    #install Development tools
-    sudo yum -y install gcc gcc-c++ make
-fi
 
 # install go
 wget -O go_tar.tar.gz https://go.dev/dl/go1.24.0.linux-${architecture}.tar.gz
@@ -163,32 +110,17 @@ go version |& tee -a ${LOG_FILE}
 
 # Clone and checkout gcsfuse repo
 export PATH=${PATH}:/usr/local/go/bin
-git clone https://github.com/anushka567/gcsfuse |& tee -a ${LOG_FILE}
+git clone https://github.com/anushka567/gcsfuse.git |& tee -a ${LOG_FILE}
 cd gcsfuse
 
-# Installation of crcmod is working through pip only on rhel and centos.
-# For debian and ubuntu, we are installing through sudo apt.
-if grep -q rhel details.txt || grep -q centos details.txt;
-then
-    # install python3-setuptools tools and python3-pip
-    sudo yum -y install gcc python3-devel python3-setuptools redhat-rpm-config
-    sudo yum -y install python3-pip
-    # Downloading composite object requires integrity checking with CRC32c in gsutil.
-    # it requires to install crcmod.
-    pip3 install --require-hashes -r tools/cd_scripts/requirements.txt --user
-fi
 
-git checkout $(sed -n 2p ~/details.txt) |& tee -a ${LOG_FILE}
+git checkout ${COMMITHASH} |& tee -a ${LOG_FILE}
 
-#run tests with testbucket flag
-set +e
-# Test directory arrays
 TEST_DIR_PARALLEL=(
   "monitoring"
   "local_file"
   "log_rotation"
   "mounting"
-  "read_cache"
   "gzip"
   "write_large_files"
   "rename_dir_limit"
@@ -201,47 +133,16 @@ TEST_DIR_PARALLEL=(
   "concurrent_operations"
   "mount_timeout"
   "stale_handle"
+  "stale_handle_streaming_writes"
   "negative_stat_cache"
   "streaming_writes"
 )
-
 # These tests never become parallel as they are changing bucket permissions.
 TEST_DIR_NON_PARALLEL=(
   "readonly"
   "managed_folders"
   "readonly_creds"
   "list_large_dir"
-)
-
-# For Zonal buckets : Test directory arrays
-TEST_DIR_PARALLEL_ZONAL=(
-  gzip
-  interrupt
-  kernel_list_cache
-  local_file
-  log_rotation
-  mounting
-  mount_timeout
-  negative_stat_cache
-  read_cache
-  read_large_files
-  rename_dir_limit
-  stale_handle
-  write_large_files
-  #concurrent_operations
-  #explicit_dir
-  #implicit_dir
-  #list_large_dir
-  #log_content
-  #operations
-  #streaming_writes
-)
-
-#For Zonal Buckets :  These tests never become parallel as they are changing bucket permissions.
-TEST_DIR_NON_PARALLEL_ZONAL=(
-  "managed_folders"
-  "readonly"
-  "readonly_creds"
 )
 
 # Create a temporary file to store the log file name.
@@ -257,7 +158,7 @@ function run_non_parallel_tests() {
   if [[ -z $3 ]]; then
     return 0
   fi
-  declare -n test_array=$3
+  declare -n test_array=$3 # nameref to the array
 
   for test_dir_np in "${test_array[@]}"
   do
@@ -277,11 +178,11 @@ function run_parallel_tests() {
   local exit_code=0
   local BUCKET_NAME=$1
   local zonal=$2
-  local array_name=$3
+  local array_name=$3 # This is the name of the array
   if [[ -z $array_name ]]; then
     return 0
   fi
-  declare -n test_array=$array_name
+  declare -n test_array=$array_name # nameref to the array
   local pids=()
 
   for test_dir_p in "${test_array[@]}"
@@ -310,10 +211,10 @@ function run_e2e_tests() {
   local is_zonal=$4
   local overall_exit_code=0
 
-  local bkt_non_parallel=$(sed -n 3p ~/details.txt)-$testcase
+  local bkt_non_parallel="read-cache-only-$testcase"
   echo "Bucket name to run non-parallel tests sequentially: $bkt_non_parallel"
 
-  local bkt_parallel=$(sed -n 3p ~/details.txt)-$testcase-parallel
+  local bkt_parallel="read-cache-only-$testcase-parallel"
   echo "Bucket name to run parallel tests: $bkt_parallel"
 
   echo "Running parallel tests..."
@@ -351,7 +252,7 @@ function gather_test_logs() {
       elif [[ "$test_log_file" == *"zonal"* ]]; then
         output_file="$HOME/logs-zonal.txt"
       else
-        output_file="$HOME/logs-flat.txt"
+        output_file="$HOME/logs.txt"
       fi
 
       echo "=== Log for ${test_log_file} ===" >> "$output_file"
@@ -361,21 +262,59 @@ function gather_test_logs() {
   done
 }
 
+
 function log_based_on_exit_status() {
   gather_test_logs
   local -n exit_status_array=$1
   for testcase in "${!exit_status_array[@]}"
     do
         if [ "${exit_status_array["$testcase"]}" != 0 ];
-        then
+        then 
             echo "Test failures detected in $testcase bucket." &>> ~/logs-$testcase.txt
         else
             touch success-$testcase.txt
-            gcloud storage cp success-$testcase.txt gs://gcsfuse-release-packages/v$(sed -n 1p ~/details.txt)/$(sed -n 3p ~/details.txt)/
+            gcloud storage cp success-$testcase.txt gs://gcsfuse-release-packages/v${RELEASEVERSION}/ubuntu-vm/
         fi
-    gcloud storage cp ~/logs-$testcase.txt gs://gcsfuse-release-packages/v$(sed -n 1p ~/details.txt)/$(sed -n 3p ~/details.txt)/
+
     done
 
+}
+
+function run_tests_in_foreground_and_return_exit_code() {
+    local testcase=$1
+    local test_dir_parallel_name=$2 # Name of the parallel array
+    local test_dir_non_parallel_name=$3 # Name of the non-parallel array
+    local zonal=$4
+
+    # Pass the names of the arrays, not the arrays themselves
+    run_e2e_tests "$testcase" "$test_dir_parallel_name" "$test_dir_non_parallel_name" "$zonal"
+    local e2e_tests_exit_code=$?
+    return "$e2e_tests_exit_code"
+}
+
+# if I dont use it here, then wait will make it blocking
+function run_tests_in_background_and_return_pid(){
+    local testcase=$1
+    local test_dir_parallel_name=$2
+    local test_dir_non_parallel_name=$3
+    local zonal=$4
+
+    # Pass the names of the arrays
+    run_e2e_tests "$testcase" "$test_dir_parallel_name" "$test_dir_non_parallel_name" "$zonal" &
+    local e2e_tests_pid=$!
+    echo "$e2e_tests_pid" # Echo the PID so it can be captured
+}
+
+
+function return_exit_status_for_pid(){
+  local -n testcase_pid=$1
+  local -n testcase_status=$2
+  for scenario in "${testcase_pid[@]}"; do
+    local pid=${testcase_pid[$scenario]}
+    wait $pid
+    testcase_status=$?
+  done
+  
 }
 
 function run_e2e_tests_for_emulator_and_log() {
@@ -391,54 +330,50 @@ function run_e2e_tests_for_emulator_and_log() {
     gcloud storage cp ~/logs-emulator.txt gs://gcsfuse-release-packages/v$(sed -n 1p ~/details.txt)/$(sed -n 3p ~/details.txt)/
 }
 
-function run_e2e_tests_for_emulator() {
-  ./tools/integration_tests/emulator_tests/emulator_tests.sh true > ~/logs-emulator.txt
-}
-
-declare -A exit_status
 if [[ "$RUN_READ_CACHE_TESTS_ONLY" == "true" ]]; then
     read_cache_test_dir_parallel=() # Empty for read cache
     read_cache_test_dir_non_parallel=("read_cache")
 
+    declare -A exit_status
     # Pass the NAMES of the arrays to the functions
-    run_e2e_tests "flat" "read_cache_test_dir_parallel" "read_cache_test_dir_non_parallel" false
+    run_tests_in_foreground_and_return_exit_code "flat" "read_cache_test_dir_parallel" "read_cache_test_dir_non_parallel" false
     exit_status["flat"]=$?
 
-    run_e2e_tests "hns" "read_cache_test_dir_parallel" "read_cache_test_dir_non_parallel" false
+    run_tests_in_foreground_and_return_exit_code "hns" "read_cache_test_dir_parallel" "read_cache_test_dir_non_parallel" false
     exit_status["hns"]=$?
 
-    run_e2e_tests "zonal" "read_cache_test_dir_parallel" "read_cache_test_dir_non_parallel" true
+    run_tests_in_foreground_and_return_exit_code "zonal" "read_cache_test_dir_parallel" "read_cache_test_dir_non_parallel" true
     exit_status["zonal"]=$?
 
-else
+    log_based_on_exit_status exit_status
+  
+
+else   
+    local_test_dir_parallel_name="TEST_DIR_PARALLEL" # Use the name of the global array in su5
+    local_test_dir_non_parallel_name="TEST_DIR_NON_PARALLEL" # Use the name of the global array in su5
+
     if [[ "$RUN_ON_ZB_ONLY" == "true" ]]; then
-        zb_test_dir_parallel="TEST_DIR_PARALLEL_ZONAL"
-        zb_test_dir_non_parallel="TEST_DIR_NON_PARALLEL_ZONAL"
+        declare -A exit_status_zonal
+        run_tests_in_foreground_and_return_exit_code "zonal" "$local_test_dir_parallel_name" "$local_test_dir_non_parallel_name" true
+        exit_status_zonal["zonal"]=$?
 
-        run_e2e_tests "zonal" "$local_test_dir_parallel_name" "$local_test_dir_non_parallel_name" true
-        exit_status["zonal"]=$?
+        log_based_on_exit_status exit_status_zonal
     else
-        test_dir_parallel="TEST_DIR_PARALLEL"
-        test_dir_non_parallel="TEST_DIR_NON_PARALLEL"
+        declare -A testcase_pids # To store PIDs
+        declare -A exit_status # To store exit statuses
 
-        run_e2e_tests "flat" "$local_test_dir_parallel_name" "$local_test_dir_non_parallel_name" false &
-        flat_test_pid=$!
-
-        run_e2e_tests "hns" "$local_test_dir_parallel_name" "$local_test_dir_non_parallel_name" false &
-        hns_test_pid=$!
+        # Capture PID using command substitution
+        testcase_pids["flat"]=$(run_tests_in_background_and_echo_pid "flat" "$local_test_dir_parallel_name" "$local_test_dir_non_parallel_name" false)
+        testcase_pids["hns"]=$(run_tests_in_background_and_echo_pid "hns" "$local_test_dir_parallel_name" "$local_test_dir_non_parallel_name" false)
 
         # Wait for PIDs and populate exit_status associative array
-        wait $flat_test_pid
-        exit_status["hns"]=$?
+        return_exit_status_for_pid testcase_pids exit_status
 
-        wait $hns_test_pid
-        exit_status["flat"]=$?
+        log_based_on_exit_status exit_status
 
         run_e2e_tests_for_emulator_and_log
     fi
 
 fi
-log_based_on_exit_status exit_status
 
-
-' 
+'

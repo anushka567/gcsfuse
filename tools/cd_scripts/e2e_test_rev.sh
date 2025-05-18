@@ -31,51 +31,36 @@ RUN_READ_CACHE_TESTS_ONLY=$(gcloud compute instances describe "$HOSTNAME" --zone
 echo "RUN_ON_ZB_ONLY flag set to : \"${RUN_ON_ZB_ONLY}\""
 echo "RUN_READ_CACHE_TESTS_ONLY flag set to : \"${RUN_READ_CACHE_TESTS_ONLY}\""
 
-
-# Logging the tests being run on the active GCE VM
-if [[ "$RUN_ON_ZB_ONLY" == "true" ]]; then
-  echo "Running integration tests for Zonal bucket only..."
-else
-  echo "Running integration tests for non-zonal buckets only..."
-fi
-
-# Logging the tests being run on the active GCE VM
-if [[ "$RUN_READ_CACHE_TESTS_ONLY" == "true" ]]; then
-  echo "Running read cache test only..."
-fi
-
-
 #details.txt file contains the release version and commit hash of the current release.
-gcloud storage cp  gs://gcsfuse-release-packages/version-detail/details.txt .
+gcloud storage cp gs://gcsfuse-release-packages/version-detail/details.txt .
 # Writing VM instance name to details.txt (Format: release-test-<os-name>)
-curl http://metadata.google.internal/computeMetadata/v1/instance/name -H "Metadata-Flavor: Google" >> details.txt
+curl http://metadata.google.internal/computeMetadata/v1/instance/name -H "Metadata-Flavor: Google" >>details.txt
 
-# Based on the os type(from vm instance name) in detail.txt, run the following commands to add starterscriptuser
-if grep -q ubuntu details.txt || grep -q debian details.txt;
-then
-#  For ubuntu and debian os
-    sudo adduser --ingroup google-sudoers --disabled-password --home=/home/starterscriptuser --gecos "" starterscriptuser
+# Based on the os type(from vm instance name) in detail.txt, run the following commands to add su2
+if grep -q ubuntu details.txt || grep -q debian details.txt; then
+	#  For ubuntu and debian os
+	sudo adduser --ingroup google-sudoers --disabled-password --home=/home/su2 --gecos "" su2
 else
-#  For rhel and centos
-    sudo adduser -g google-sudoers --home-dir=/home/starterscriptuser starterscriptuser
+	#  For rhel and centos
+	sudo adduser -g google-sudoers --home-dir=/home/su2 su2
 fi
 
-# Run the following as starterscriptuser
-sudo -u starterscriptuser bash -c '
+# Run the following as su2
+sudo -u su2 bash -c '
 # Exit immediately if a command exits with a non-zero status.
 set -e
 # Print commands and their arguments as they are executed.
 set -x
 
-# Export the RUN_ON_ZB_ONLY variable so that it is available in the environment of the 'starterscriptuser' user.
-# Since we are running the subsequent script as 'starterscriptuser' using sudo, the environment of 'starterscriptuser' 
+# Export the RUN_ON_ZB_ONLY variable so that it is available in the environment of the 'su2' user.
+# Since we are running the subsequent script as 'su2' using sudo, the environment of 'su2' 
 # would not automatically have access to the environment variables set by the original user (i.e. $RUN_ON_ZB_ONLY).
-# By exporting this variable, we ensure that the value of RUN_ON_ZB_ONLY is passed into the 'starterscriptuser' script 
+# By exporting this variable, we ensure that the value of RUN_ON_ZB_ONLY is passed into the 'su2' script 
 # and can be used for conditional logic or decisions within that script.
 export RUN_ON_ZB_ONLY='$RUN_ON_ZB_ONLY'
 export RUN_READ_CACHE_TESTS_ONLY='$RUN_READ_CACHE_TESTS_ONLY'
 
-#Copy details.txt to starterscriptuser home directory and create logs.txt
+#Copy details.txt to su2 home directory and create logs.txt
 cd ~/
 cp /details.txt .
 touch logs.txt
@@ -163,7 +148,7 @@ go version |& tee -a ${LOG_FILE}
 
 # Clone and checkout gcsfuse repo
 export PATH=${PATH}:/usr/local/go/bin
-git clone https://github.com/anushka567/gcsfuse |& tee -a ${LOG_FILE}
+git clone https://github.com/googlecloudplatform/gcsfuse |& tee -a ${LOG_FILE}
 cd gcsfuse
 
 # Installation of crcmod is working through pip only on rhel and centos.
@@ -180,15 +165,11 @@ fi
 
 git checkout $(sed -n 2p ~/details.txt) |& tee -a ${LOG_FILE}
 
-#run tests with testbucket flag
-set +e
-# Test directory arrays
 TEST_DIR_PARALLEL=(
   "monitoring"
   "local_file"
   "log_rotation"
   "mounting"
-  "read_cache"
   "gzip"
   "write_large_files"
   "rename_dir_limit"
@@ -201,10 +182,10 @@ TEST_DIR_PARALLEL=(
   "concurrent_operations"
   "mount_timeout"
   "stale_handle"
+  "stale_handle_streaming_writes"
   "negative_stat_cache"
   "streaming_writes"
 )
-
 # These tests never become parallel as they are changing bucket permissions.
 TEST_DIR_NON_PARALLEL=(
   "readonly"
@@ -213,60 +194,27 @@ TEST_DIR_NON_PARALLEL=(
   "list_large_dir"
 )
 
-# For Zonal buckets : Test directory arrays
-TEST_DIR_PARALLEL_ZONAL=(
-  gzip
-  interrupt
-  kernel_list_cache
-  local_file
-  log_rotation
-  mounting
-  mount_timeout
-  negative_stat_cache
-  read_cache
-  read_large_files
-  rename_dir_limit
-  stale_handle
-  write_large_files
-  #concurrent_operations
-  #explicit_dir
-  #implicit_dir
-  #list_large_dir
-  #log_content
-  #operations
-  #streaming_writes
-)
-
-#For Zonal Buckets :  These tests never become parallel as they are changing bucket permissions.
-TEST_DIR_NON_PARALLEL_ZONAL=(
-  "managed_folders"
-  "readonly"
-  "readonly_creds"
-)
-
 # Create a temporary file to store the log file name.
 TEST_LOGS_FILE=$(mktemp)
 
 INTEGRATION_TEST_TIMEOUT=240m
 
 function run_non_parallel_tests() {
-  local exit_code=0 # Initialize to 0 for success
-  local BUCKET_NAME=$1
-  local zonal=$2
-
-  if [[ -z $3 ]]; then
-    return 0
-  fi
-  declare -n test_array=$3
-
+  local exit_code=0
+  local -n test_array=$1
+  local BUCKET_NAME=$2
+  local zonal=$3
   for test_dir_np in "${test_array[@]}"
   do
     test_path_non_parallel="./tools/integration_tests/$test_dir_np"
+    # To make it clear whether tests are running on a flat or HNS or zonal bucket, We kept the log file naming
+    # convention to include the bucket name as a suffix (e.g., package_name_bucket_name).
     local log_file="/tmp/${test_dir_np}_${BUCKET_NAME}.log"
-    echo "$log_file" >> "$TEST_LOGS_FILE" # Use double quotes for log_file
-    GODEBUG=asyncpreemptoff=1 go test "$test_path_non_parallel" -p 1 --zonal="${zonal}" --integrationTest -v --testbucket="$BUCKET_NAME" --testInstalledPackage=true -timeout "$INTEGRATION_TEST_TIMEOUT" > "$log_file" 2>&1
+    echo $log_file >> $TEST_LOGS_FILE
+    # Executing integration tests
+    GODEBUG=asyncpreemptoff=1 go test $test_path_non_parallel -p 1 --zonal=${zonal} --integrationTest -v --testbucket=$BUCKET_NAME --testInstalledPackage=true -timeout $INTEGRATION_TEST_TIMEOUT > "$log_file" 2>&1
     exit_code_non_parallel=$?
-    if [ $exit_code_non_parallel -ne 0 ]; then
+    if [ $exit_code_non_parallel != 0 ]; then
       exit_code=$exit_code_non_parallel
     fi
   done
@@ -275,28 +223,28 @@ function run_non_parallel_tests() {
 
 function run_parallel_tests() {
   local exit_code=0
-  local BUCKET_NAME=$1
-  local zonal=$2
-  local array_name=$3
-  if [[ -z $array_name ]]; then
-    return 0
-  fi
-  declare -n test_array=$array_name
+  local -n test_array=$1
+  local BUCKET_NAME=$2
+  local zonal=$3
   local pids=()
 
   for test_dir_p in "${test_array[@]}"
   do
     test_path_parallel="./tools/integration_tests/$test_dir_p"
+    # To make it clear whether tests are running on a flat or HNS bucket, We kept the log file naming
+    # convention to include the bucket name as a suffix (e.g., package_name_bucket_name).
     local log_file="/tmp/${test_dir_p}_${BUCKET_NAME}.log"
-    echo "$log_file" >> "$TEST_LOGS_FILE"
-    GODEBUG=asyncpreemptoff=1 go test "$test_path_parallel" -p 1 --zonal="${zonal}" --integrationTest -v --testbucket="$BUCKET_NAME" --testInstalledPackage=true -timeout "$INTEGRATION_TEST_TIMEOUT" > "$log_file" 2>&1 &
-    pid=$!
-    pids+=("$pid")
+    echo $log_file >> $TEST_LOGS_FILE
+    # Executing integration tests
+    GODEBUG=asyncpreemptoff=1 go test $test_path_parallel -p 1 --zonal=${zonal} --integrationTest -v --testbucket=$BUCKET_NAME --testInstalledPackage=true -timeout $INTEGRATION_TEST_TIMEOUT > "$log_file" 2>&1 &
+    pid=$!  # Store the PID of the background process
+    pids+=("$pid")  # Optionally add the PID to an array for later
   done
+  # Wait for processes and collect exit codes
   for pid in "${pids[@]}"; do
-    wait "$pid"
+    wait $pid
     exit_code_parallel=$?
-    if [ $exit_code_parallel -ne 0 ]; then
+    if [ $exit_code_parallel != 0 ]; then
       exit_code=$exit_code_parallel
     fi
   done
@@ -304,39 +252,38 @@ function run_parallel_tests() {
 }
 
 function run_e2e_tests() {
-  local testcase=$1
-  declare -n test_dir_parallel=$2
-  declare -n test_dir_non_parallel=$3
-  local is_zonal=$4
-  local overall_exit_code=0
+  testcase= $1 // hns/flat/zonal/emulator
+  test_dir_parallel=$2
+  test_dir_non_parallel=$3
+  is_zonal=$4
 
-  local bkt_non_parallel=$(sed -n 3p ~/details.txt)-$testcase
-  echo "Bucket name to run non-parallel tests sequentially: $bkt_non_parallel"
+  bkt_non_parallel=$(sed -n 3p ~/details.txt)-$testcase
+  echo "Bucket name to run tests sequentially: "$bkt_non_parallel
 
-  local bkt_parallel=$(sed -n 3p ~/details.txt)-$testcase-parallel
-  echo "Bucket name to run parallel tests: $bkt_parallel"
+  bkt_parallel=$(sed -n 3p ~/details.txt)-$testcase-parallel
+  echo "Bucket name to run tests parallelly: "$bkt_parallel
 
   echo "Running parallel tests..."
-  run_parallel_tests  "$bkt_parallel" "$is_zonal" "$2" & # Pass the name of the array
+  run_parallel_tests $test_dir_parallel "$bkt_parallel" $is_zonal &
   parallel_tests_pid=$!
 
   echo "Running non parallel tests ..."
-  run_non_parallel_tests  "$bkt_non_parallel" "$is_zonal" "$3" & # Pass the name of the array
+  run_non_parallel_tests $test_dir_non_parallel "$bkt_non_parallel" $is_zonal &
   non_parallel_tests_pid=$!
 
-  wait "$parallel_tests_pid"
-  local parallel_tests_exit_code=$?
-  wait "$non_parallel_tests_pid"
-  local non_parallel_tests_exit_code=$?
+  # Wait for all tests to complete.
+  wait $parallel_tests_pid
+  parallel_tests_exit_code=$?
+  wait $non_parallel_tests_pid
+  non_parallel_tests_exit_code=$?
 
-  if [ "$non_parallel_tests_exit_code" -ne 0 ]; then
-    overall_exit_code=$non_parallel_tests_exit_code
+  if [ $non_parallel_tests_exit_code != 0 ]; then
+    return $non_parallel_tests_exit_code
   fi
 
-  if [ "$parallel_tests_exit_code" -ne 0 ]; then
-    overall_exit_code=$parallel_tests_exit_code
+  if [ $parallel_tests_exit_code != 0 ]; then
+    return $parallel_tests_exit_code
   fi
-  return $overall_exit_code
 }
 
 function gather_test_logs() {
@@ -351,7 +298,7 @@ function gather_test_logs() {
       elif [[ "$test_log_file" == *"zonal"* ]]; then
         output_file="$HOME/logs-zonal.txt"
       else
-        output_file="$HOME/logs-flat.txt"
+        output_file="$HOME/logs.txt"
       fi
 
       echo "=== Log for ${test_log_file} ===" >> "$output_file"
@@ -361,21 +308,84 @@ function gather_test_logs() {
   done
 }
 
-function log_based_on_exit_status() {
-  gather_test_logs
-  local -n exit_status_array=$1
-  for testcase in "${!exit_status_array[@]}"
+function wait_on_pid_and_log(declare -A testcase_pids){
+    declare -A testcase_status
+    for testcase in "${!testcase_pids[@]}"
     do
-        if [ "${exit_status_array["$testcase"]}" != 0 ];
-        then
+        local pid="${testcase_pids["$testcase"]}"
+        echo "Waiting for PID $pid (Testcase: $testcase)..."
+        wait $pid
+        status=$?
+        testcase_status[$testcase]=status
+
+    done
+
+    gather_test_logs
+
+    for testcase in "${!testcase_pids[@]}"
+    do
+        if [ "${testcase_pids["$testcase"]}" != 0 ];
+        then 
             echo "Test failures detected in $testcase bucket." &>> ~/logs-$testcase.txt
         else
             touch success-$testcase.txt
             gcloud storage cp success-$testcase.txt gs://gcsfuse-release-packages/v$(sed -n 1p ~/details.txt)/$(sed -n 3p ~/details.txt)/
         fi
-    gcloud storage cp ~/logs-$testcase.txt gs://gcsfuse-release-packages/v$(sed -n 1p ~/details.txt)/$(sed -n 3p ~/details.txt)/
+
+    done
+}
+
+
+func log_based_on_exit_status(){
+  gather_test_logs
+  local -n exit_status_array=$1
+  for testcase in "${!exit_status_array[@]}"
+    do
+        if [ "${exit_status_array["$testcase"]}" != 0 ];
+        then 
+            echo "Test failures detected in $testcase bucket." &>> ~/logs-$testcase.txt
+        else
+            touch success-$testcase.txt
+            gcloud storage cp success-$testcase.txt gs://gcsfuse-release-packages/v${RELEASEVERSION}/ubuntu-vm/
+        fi
+
     done
 
+}
+
+function run_tests_in_foreground_and_return_exit_code() {
+    testcase=$1
+    test_dir_parallel=$2
+    test_dir_non_parallel=$3
+    zonal=$4
+
+    run_e2e_tests $testcase $test_dir_parallel $test_dir_non_parallel $zonal 
+    e2e_tests_exit_code=$?
+    return $e2e_tests_exit_code
+}
+
+# if I dont use it here, then wait will make it blocking
+function run_tests_in_background_and_return_pid(){
+    testcase=$1
+    test_dir_parallel=$2
+    test_dir_non_parallel=$3
+    zonal=$4
+
+    run_e2e_tests $testcase $test_dir_parallel $test_dir_non_parallel $zonal &
+    e2e_tests_pid=$!
+    return $e2e_tests_pid
+}
+
+
+function return_exit_status_for_pid(){
+  local -n testcase_pid=$1
+  local -n testcase_status=$2
+  for scenario in "${testcase_pid[@]}"; do
+    local pid=${testcase_pid[$scenario]}
+    wait $pid
+    testcase_status=$?
+  done
+  
 }
 
 function run_e2e_tests_for_emulator_and_log() {
@@ -391,54 +401,45 @@ function run_e2e_tests_for_emulator_and_log() {
     gcloud storage cp ~/logs-emulator.txt gs://gcsfuse-release-packages/v$(sed -n 1p ~/details.txt)/$(sed -n 3p ~/details.txt)/
 }
 
-function run_e2e_tests_for_emulator() {
-  ./tools/integration_tests/emulator_tests/emulator_tests.sh true > ~/logs-emulator.txt
-}
 
-declare -A exit_status
 if [[ "$RUN_READ_CACHE_TESTS_ONLY" == "true" ]]; then
-    read_cache_test_dir_parallel=() # Empty for read cache
-    read_cache_test_dir_non_parallel=("read_cache")
-
-    # Pass the NAMES of the arrays to the functions
-    run_e2e_tests "flat" "read_cache_test_dir_parallel" "read_cache_test_dir_non_parallel" false
+    test_dir_parallel = ()
+    test_dir_non_parallel = ("read_cache")
+    declare -A exit_status
+    run_tests_in_foreground_and_return_exit_code "flat" $test_dir_parallel $test_dir_non_parallel false 
     exit_status["flat"]=$?
-
-    run_e2e_tests "hns" "read_cache_test_dir_parallel" "read_cache_test_dir_non_parallel" false
+    run_tests_in_foreground_and_return_exit_code "hns" $test_dir_parallel $test_dir_non_parallel false 
     exit_status["hns"]=$?
-
-    run_e2e_tests "zonal" "read_cache_test_dir_parallel" "read_cache_test_dir_non_parallel" true
+    run_tests_in_foreground_and_return_exit_code "zonal" $test_dir_parallel $test_dir_non_parallel true 
     exit_status["zonal"]=$?
+    
+    log_based_on_exit_status $exit_status
+  
 
-else
-    if [[ "$RUN_ON_ZB_ONLY" == "true" ]]; then
-        zb_test_dir_parallel="TEST_DIR_PARALLEL_ZONAL"
-        zb_test_dir_non_parallel="TEST_DIR_NON_PARALLEL_ZONAL"
-
-        run_e2e_tests "zonal" "$local_test_dir_parallel_name" "$local_test_dir_non_parallel_name" true
+else   
+    test_dir_parallel = $TEST_DIR_PARALLEL
+    test_dir_non_parallel = $TEST_DIR_NON_PARALLEL
+    if [[ "$RUN_ON_ZB_ONLY" == "true"]]; then
+        declare -A exit_status
+        run_tests_in_foreground_and_return_exit_code "zonal" $test_dir_parallel $test_dir_non_parallel true 
         exit_status["zonal"]=$?
+    
+        log_based_on_exit_status $exit_status
     else
-        test_dir_parallel="TEST_DIR_PARALLEL"
-        test_dir_non_parallel="TEST_DIR_NON_PARALLEL"
+        declare -A testcase_pids
+        declare -A exit_status
+        run_tests_in_background_and_return_pid "flat" $test_dir_parallel $test_dir_non_parallel false 
+        testcase_pid["flat"]=$?
+        run_tests_in_background_and_return_pid "hns" $test_dir_parallel $test_dir_non_parallel false 
+        testcase_pid["hns"]=$?
 
-        run_e2e_tests "flat" "$local_test_dir_parallel_name" "$local_test_dir_non_parallel_name" false &
-        flat_test_pid=$!
-
-        run_e2e_tests "hns" "$local_test_dir_parallel_name" "$local_test_dir_non_parallel_name" false &
-        hns_test_pid=$!
-
-        # Wait for PIDs and populate exit_status associative array
-        wait $flat_test_pid
-        exit_status["hns"]=$?
-
-        wait $hns_test_pid
-        exit_status["flat"]=$?
+        return_exit_status_for_pid testcase_pids exit_status
+        
+        log_based_on_exit_status $exit_status
 
         run_e2e_tests_for_emulator_and_log
     fi
 
 fi
-log_based_on_exit_status exit_status
 
-
-' 
+'
