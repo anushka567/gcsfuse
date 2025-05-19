@@ -311,10 +311,15 @@ function run_e2e_tests() {
   local is_zonal=$4
   local overall_exit_code=0
 
-  local bkt_non_parallel=$(sed -n 3p ~/details.txt)-$testcase
+  prefix=$(sed -n 3p ~/details.txt)
+  if [[ "$testcase" != "flat" ]]; then
+    prefix=$(sed -n 3p ~/details.txt)-$testcase
+  fi
+
+  local bkt_non_parallel=$prefix
   echo "Bucket name to run non-parallel tests sequentially: $bkt_non_parallel"
 
-  local bkt_parallel=$(sed -n 3p ~/details.txt)-$testcase-parallel
+  local bkt_parallel=$prefix-parallel
   echo "Bucket name to run parallel tests: $bkt_parallel"
 
   echo "Running parallel tests..."
@@ -352,7 +357,7 @@ function gather_test_logs() {
       elif [[ "$test_log_file" == *"zonal"* ]]; then
         output_file="$HOME/logs-zonal.txt"
       else
-        output_file="$HOME/logs-flat.txt"
+        output_file="$HOME/logs.txt"
       fi
 
       echo "=== Log for ${test_log_file} ===" >> "$output_file"
@@ -365,16 +370,26 @@ function gather_test_logs() {
 function log_based_on_exit_status() {
   gather_test_logs
   local -n exit_status_array=$1
+
   for testcase in "${!exit_status_array[@]}"
     do
+        local logfile=""
+        local successfile=""
+        if [[ "$testcase" == "flat" ]]; then
+          logfile="$HOME/logs.txt"
+          successfile="$HOME/success.txt"
+        else
+          logfile="$HOME/logs-$testcase.txt"
+          successfile="$HOME/success-$testcase.txt"
+        fi
         if [ "${exit_status_array["$testcase"]}" != 0 ];
         then
-            echo "Test failures detected in $testcase bucket." &>> ~/logs-$testcase.txt
+            echo "Test failures detected in $testcase bucket." &>> $logfile
         else
-            touch success-$testcase.txt
-            gcloud storage cp success-$testcase.txt gs://gcsfuse-release-packages/v$(sed -n 1p ~/details.txt)/$(sed -n 3p ~/details.txt)/
+            touch $successfile
+            gcloud storage cp $successfile gs://gcsfuse-release-packages/v$(sed -n 1p ~/details.txt)/$(sed -n 3p ~/details.txt)/
         fi
-    gcloud storage cp ~/logs-$testcase.txt gs://gcsfuse-release-packages/v$(sed -n 1p ~/details.txt)/$(sed -n 3p ~/details.txt)/
+    gcloud storage cp $logfile gs://gcsfuse-release-packages/v$(sed -n 1p ~/details.txt)/$(sed -n 3p ~/details.txt)/
     done
 
 }
@@ -402,30 +417,24 @@ if [[ "$RUN_READ_CACHE_TESTS_ONLY" == "true" ]]; then
     read_cache_test_dir_non_parallel=("read_cache")
 
     # Pass the NAMES of the arrays to the functions
-    run_e2e_tests "flat" "read_cache_test_dir_parallel" "read_cache_test_dir_non_parallel" false
+    run_e2e_tests "flat" read_cache_test_dir_parallel read_cache_test_dir_non_parallel false
     exit_status["flat"]=$?
 
-    run_e2e_tests "hns" "read_cache_test_dir_parallel" "read_cache_test_dir_non_parallel" false
+    run_e2e_tests "hns" read_cache_test_dir_parallel read_cache_test_dir_non_parallel false
     exit_status["hns"]=$?
 
-    run_e2e_tests "zonal" "read_cache_test_dir_parallel" "read_cache_test_dir_non_parallel" true
+    run_e2e_tests "zonal" read_cache_test_dir_parallel read_cache_test_dir_non_parallel true
     exit_status["zonal"]=$?
 
 else
     if [[ "$RUN_ON_ZB_ONLY" == "true" ]]; then
-        zb_test_dir_parallel="TEST_DIR_PARALLEL_ZONAL"
-        zb_test_dir_non_parallel="TEST_DIR_NON_PARALLEL_ZONAL"
-
-        run_e2e_tests "zonal" "$local_test_dir_parallel_name" "$local_test_dir_non_parallel_name" true
+        run_e2e_tests "zonal" TEST_DIR_PARALLEL_ZONAL TEST_DIR_NON_PARALLEL_ZONAL true
         exit_status["zonal"]=$?
     else
-        test_dir_parallel="TEST_DIR_PARALLEL"
-        test_dir_non_parallel="TEST_DIR_NON_PARALLEL"
-
-        run_e2e_tests "flat" "$local_test_dir_parallel_name" "$local_test_dir_non_parallel_name" false &
+        run_e2e_tests "flat" TEST_DIR_PARALLEL TEST_DIR_NON_PARALLEL false &
         flat_test_pid=$!
 
-        run_e2e_tests "hns" "$local_test_dir_parallel_name" "$local_test_dir_non_parallel_name" false &
+        run_e2e_tests "hns" TEST_DIR_PARALLEL TEST_DIR_NON_PARALLEL false &
         hns_test_pid=$!
 
         # Wait for PIDs and populate exit_status associative array
