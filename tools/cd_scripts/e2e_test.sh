@@ -31,33 +31,30 @@ RUN_READ_CACHE_TESTS_ONLY=$(gcloud compute instances describe "$HOSTNAME" --zone
 echo "RUN_ON_ZB_ONLY flag set to : \"${RUN_ON_ZB_ONLY}\""
 echo "RUN_READ_CACHE_TESTS_ONLY flag set to : \"${RUN_READ_CACHE_TESTS_ONLY}\""
 
-
 # Logging the tests being run on the active GCE VM
 if [[ "$RUN_ON_ZB_ONLY" == "true" ]]; then
-  echo "Running integration tests for Zonal bucket only..."
+	echo "Running integration tests for Zonal bucket only..."
 else
-  echo "Running integration tests for non-zonal buckets only..."
+	echo "Running integration tests for non-zonal buckets only..."
 fi
 
 # Logging the tests being run on the active GCE VM
 if [[ "$RUN_READ_CACHE_TESTS_ONLY" == "true" ]]; then
-  echo "Running read cache test only..."
+	echo "Running read cache test only..."
 fi
 
-
 #details.txt file contains the release version and commit hash of the current release.
-gcloud storage cp  gs://gcsfuse-release-packages/version-detail/details.txt .
+gcloud storage cp gs://gcsfuse-release-packages/version-detail/details.txt .
 # Writing VM instance name to details.txt (Format: release-test-<os-name>)
-curl http://metadata.google.internal/computeMetadata/v1/instance/name -H "Metadata-Flavor: Google" >> details.txt
+curl http://metadata.google.internal/computeMetadata/v1/instance/name -H "Metadata-Flavor: Google" >>details.txt
 
 # Based on the os type(from vm instance name) in detail.txt, run the following commands to add starterscriptuser
-if grep -q ubuntu details.txt || grep -q debian details.txt;
-then
-#  For ubuntu and debian os
-    sudo adduser --ingroup google-sudoers --disabled-password --home=/home/starterscriptuser --gecos "" starterscriptuser
+if grep -q ubuntu details.txt || grep -q debian details.txt; then
+	#  For ubuntu and debian os
+	sudo adduser --ingroup google-sudoers --disabled-password --home=/home/starterscriptuser --gecos "" starterscriptuser
 else
-#  For rhel and centos
-    sudo adduser -g google-sudoers --home-dir=/home/starterscriptuser starterscriptuser
+	#  For rhel and centos
+	sudo adduser -g google-sudoers --home-dir=/home/starterscriptuser starterscriptuser
 fi
 
 # Run the following as starterscriptuser
@@ -188,7 +185,6 @@ TEST_DIR_PARALLEL=(
   "local_file"
   "log_rotation"
   "mounting"
-  "read_cache"
   "gzip"
   "write_large_files"
   "rename_dir_limit"
@@ -223,7 +219,6 @@ TEST_DIR_PARALLEL_ZONAL=(
   mounting
   mount_timeout
   negative_stat_cache
-  read_cache
   read_large_files
   rename_dir_limit
   stale_handle
@@ -344,7 +339,7 @@ function run_e2e_tests() {
   prefix=$(sed -n 3p ~/details.txt)
   if [[ "$testcase" != "flat" ]]; then
     prefix=$(sed -n 3p ~/details.txt)-$testcase
-  fin
+  fi
 
   local bkt_non_parallel=$prefix
   echo "Bucket name to run non-parallel tests sequentially: $bkt_non_parallel"
@@ -353,11 +348,11 @@ function run_e2e_tests() {
   echo "Bucket name to run parallel tests: $bkt_parallel"
 
   echo "Running parallel tests..."
-  run_parallel_tests  "$bkt_parallel" "$is_zonal" "$test_dir_parallel" & # Pass the name of the array
+  run_parallel_tests  "$bkt_parallel" "$is_zonal" test_dir_parallel & # Pass the name of the array
   parallel_tests_pid=$!
 
   echo "Running non parallel tests ..."
-  run_non_parallel_tests  "$bkt_non_parallel" "$is_zonal" "$test_dir_non_parallel" & # Pass the name of the array
+  run_non_parallel_tests  "$bkt_non_parallel" "$is_zonal" test_dir_non_parallel & # Pass the name of the array
   non_parallel_tests_pid=$!
 
   wait "$parallel_tests_pid"
@@ -451,6 +446,7 @@ if [[ "$RUN_READ_CACHE_TESTS_ONLY" == "true" ]]; then
     read_cache_test_dir_non_parallel=("read_cache")
 
     # Run E2E tests for flat, HNS, and zonal buckets with only read cache tests.
+    # Running sequentially due to known limitations of simultaneous execution.
     run_e2e_tests "flat" read_cache_test_dir_parallel read_cache_test_dir_non_parallel false
     exit_status["flat"]=$?
 
