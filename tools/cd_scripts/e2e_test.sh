@@ -68,9 +68,9 @@ set -e
 set -x
 
 # Export the RUN_ON_ZB_ONLY variable so that it is available in the environment of the 'starterscriptuser' user.
-# Since we are running the subsequent script as 'starterscriptuser' using sudo, the environment of 'starterscriptuser' 
+# Since we are running the subsequent script as 'starterscriptuser' using sudo, the environment of 'starterscriptuser'
 # would not automatically have access to the environment variables set by the original user (i.e. $RUN_ON_ZB_ONLY).
-# By exporting this variable, we ensure that the value of RUN_ON_ZB_ONLY is passed into the 'starterscriptuser' script 
+# By exporting this variable, we ensure that the value of RUN_ON_ZB_ONLY is passed into the 'starterscriptuser' script
 # and can be used for conditional logic or decisions within that script.
 export RUN_ON_ZB_ONLY='$RUN_ON_ZB_ONLY'
 export RUN_READ_CACHE_TESTS_ONLY='$RUN_READ_CACHE_TESTS_ONLY'
@@ -86,7 +86,7 @@ LOG_FILE='~/logs.txt'
 if [[ "$RUN_ON_ZB_ONLY" == "true" ]]; then
   LOG_FILE='~/logs-zonal.txt'
 fi
-  
+
 echo "User: $USER" &>> ${LOG_FILE}
 echo "Current Working Directory: $(pwd)"  &>> ${LOG_FILE}
 
@@ -163,7 +163,7 @@ go version |& tee -a ${LOG_FILE}
 
 # Clone and checkout gcsfuse repo
 export PATH=${PATH}:/usr/local/go/bin
-git clone https://github.com/anushka567/gcsfuse |& tee -a ${LOG_FILE}
+git clone https://github.com/googlecloudplatform/gcsfuse |& tee -a ${LOG_FILE}
 cd gcsfuse
 
 # Installation of crcmod is working through pip only on rhel and centos.
@@ -201,7 +201,6 @@ TEST_DIR_PARALLEL=(
   "concurrent_operations"
   "mount_timeout"
   "stale_handle"
-  "stale_handle_streaming_writes"
   "negative_stat_cache"
   "streaming_writes"
 )
@@ -238,7 +237,7 @@ TEST_DIR_PARALLEL_ZONAL=(
   #streaming_writes
 )
 
-#For Zonal Buckets :  These tests never become parallel as they are changing bucket permissions.
+# For Zonal Buckets :  These tests never become parallel as they are changing bucket permissions.
 TEST_DIR_NON_PARALLEL_ZONAL=(
   "managed_folders"
   "readonly"
@@ -250,15 +249,25 @@ TEST_LOGS_FILE=$(mktemp)
 
 INTEGRATION_TEST_TIMEOUT=240m
 
+# This method runs test packages in sequence.Necessary when the tests involves
+# permissions modification etc.
+# Arguments:
+#   $1: BUCKET_NAME (The name of the GCS bucket to use for tests.)
+#   $2: IS_ZONAL_BUCKET_FLAG (Boolean flag: 'true' if the bucket is zonal, 'false' otherwise.)
+#   $3: NAME_OF_TEST_DIR_ARRAY (The shell variable name of the array containing test directory.)
 function run_non_parallel_tests() {
+  if [ "$#" -ne 3 ]; then
+    echo "Incorrect number of arguments passed, Expecting <BUCKET_NAME>
+    <IS_ZONAL_BUCKET> <TEST_DIR_ARRAY>"
+    exit 1
+  fi
   local exit_code=0 # Initialize to 0 for success
   local BUCKET_NAME=$1
   local zonal=$2
-
   if [[ -z $3 ]]; then
-    return 0
+    return 1 # The name of the test array cannot be empty.
   fi
-  declare -n test_array=$3
+  local -n test_array=$3 # Create a nameref to this array.
 
   for test_dir_np in "${test_array[@]}"
   do
@@ -274,15 +283,24 @@ function run_non_parallel_tests() {
   return $exit_code
 }
 
+#This method runs test packages in parallel.
+# Arguments:
+#   $1: BUCKET_NAME (The name of the GCS bucket to use for tests.)
+#   $2: IS_ZONAL_BUCKET_FLAG (Boolean flag: 'true' if the bucket is zonal, 'false' otherwise.)
+#   $3: NAME_OF_TEST_DIR_ARRAY (The shell variable name of the array containing test directory.)
 function run_parallel_tests() {
+  if [ "$#" -ne 3 ]; then
+    echo "Incorrect number of arguments passed, Expecting <BUCKET_NAME>
+    <IS_ZONAL_BUCKET> <TEST_DIR_ARRAY>"
+    exit 1
+  fi
   local exit_code=0
   local BUCKET_NAME=$1
   local zonal=$2
-  local array_name=$3
-  if [[ -z $array_name ]]; then
-    return 0
+  if [[ -z $3 ]]; then
+    return 1 # The name of the test array cannot be empty.
   fi
-  declare -n test_array=$array_name
+  local -n test_array=$3 # Create a nameref to this array.
   local pids=()
 
   for test_dir_p in "${test_array[@]}"
@@ -304,17 +322,29 @@ function run_parallel_tests() {
   return $exit_code
 }
 
+#Common method to invoke e2e tests on different types of buckets: flat, HNS or Zonal
+# Arguments:
+#   $1: TESTCASE (flat/hns/zonal)
+#   $2: TEST_DIR_PARALLEL (list of test packages that can be run in parallel)
+#   $3: TEST_DIR_NON_PARALLEL (list of test packages that should be run in sequence)
+#   $4: IS_ZONAL_BUCKET_FLAG (Boolean flag: 'true' if the bucket is zonal, 'false' otherwise.)
 function run_e2e_tests() {
+  if [ "$#" -ne 4 ]; then
+    echo "Incorrect number of arguments passed, Expecting <TESTCASE>
+    <NAME_OF_PARALLEL_TEST_DIR_ARRAY> <NAME_OF_PARALLEL_TEST_DIR_ARRAY>
+    <IS_ZONAL_BUCKET_FLAG>"
+    exit 1
+  fi
   local testcase=$1
-  declare -n test_dir_parallel=$2
-  declare -n test_dir_non_parallel=$3
+  local -n test_dir_parallel=$2
+  local -n test_dir_non_parallel=$3
   local is_zonal=$4
   local overall_exit_code=0
 
   prefix=$(sed -n 3p ~/details.txt)
   if [[ "$testcase" != "flat" ]]; then
     prefix=$(sed -n 3p ~/details.txt)-$testcase
-  fi
+  fin
 
   local bkt_non_parallel=$prefix
   echo "Bucket name to run non-parallel tests sequentially: $bkt_non_parallel"
@@ -323,11 +353,11 @@ function run_e2e_tests() {
   echo "Bucket name to run parallel tests: $bkt_parallel"
 
   echo "Running parallel tests..."
-  run_parallel_tests  "$bkt_parallel" "$is_zonal" "$2" & # Pass the name of the array
+  run_parallel_tests  "$bkt_parallel" "$is_zonal" "$test_dir_parallel" & # Pass the name of the array
   parallel_tests_pid=$!
 
   echo "Running non parallel tests ..."
-  run_non_parallel_tests  "$bkt_non_parallel" "$is_zonal" "$3" & # Pass the name of the array
+  run_non_parallel_tests  "$bkt_non_parallel" "$is_zonal" "$test_dir_non_parallel" & # Pass the name of the array
   non_parallel_tests_pid=$!
 
   wait "$parallel_tests_pid"
@@ -367,7 +397,13 @@ function gather_test_logs() {
   done
 }
 
+# Function to log test results and upload them to GCS based on exit status.
+# Arguments: $1 = name of the associative array containing testcase exit statuses.
 function log_based_on_exit_status() {
+  if [ "$#" -ne 1 ]; then
+    echo "Incorrect number of arguments passed, Expecting <EXIT_STATUS_ARRAY_NAME>"
+    exit 1
+  fi
   gather_test_logs
   local -n exit_status_array=$1
 
@@ -394,6 +430,7 @@ function log_based_on_exit_status() {
 
 }
 
+# Function to run emulator-based E2E tests and log results.
 function run_e2e_tests_for_emulator_and_log() {
   ./tools/integration_tests/emulator_tests/emulator_tests.sh true > ~/logs-emulator.txt
   emulator_test_status=$?
@@ -407,16 +444,13 @@ function run_e2e_tests_for_emulator_and_log() {
     gcloud storage cp ~/logs-emulator.txt gs://gcsfuse-release-packages/v$(sed -n 1p ~/details.txt)/$(sed -n 3p ~/details.txt)/
 }
 
-function run_e2e_tests_for_emulator() {
-  ./tools/integration_tests/emulator_tests/emulator_tests.sh true > ~/logs-emulator.txt
-}
-
+# Declare an associative array to store the exit status of different test runs.
 declare -A exit_status
 if [[ "$RUN_READ_CACHE_TESTS_ONLY" == "true" ]]; then
-    read_cache_test_dir_parallel=() # Empty for read cache
+    read_cache_test_dir_parallel=() # Empty for read cache tests only
     read_cache_test_dir_non_parallel=("read_cache")
 
-    # Pass the NAMES of the arrays to the functions
+    # Run E2E tests for flat, HNS, and zonal buckets with only read cache tests.
     run_e2e_tests "flat" read_cache_test_dir_parallel read_cache_test_dir_non_parallel false
     exit_status["flat"]=$?
 
@@ -425,12 +459,14 @@ if [[ "$RUN_READ_CACHE_TESTS_ONLY" == "true" ]]; then
 
     run_e2e_tests "zonal" read_cache_test_dir_parallel read_cache_test_dir_non_parallel true
     exit_status["zonal"]=$?
-
 else
+    # If not running *only* read cache tests, proceed with full test suites.
     if [[ "$RUN_ON_ZB_ONLY" == "true" ]]; then
+        # If only zonal bucket tests are to be run.
         run_e2e_tests "zonal" TEST_DIR_PARALLEL_ZONAL TEST_DIR_NON_PARALLEL_ZONAL true
         exit_status["zonal"]=$?
     else
+        # Run flat and HNS tests concurrently in the background.
         run_e2e_tests "flat" TEST_DIR_PARALLEL TEST_DIR_NON_PARALLEL false &
         flat_test_pid=$!
 
@@ -439,16 +475,17 @@ else
 
         # Wait for PIDs and populate exit_status associative array
         wait $flat_test_pid
-        exit_status["hns"]=$?
-
-        wait $hns_test_pid
         exit_status["flat"]=$?
 
+        wait $hns_test_pid
+        exit_status["hns"]=$?
+
+        # Run emulator tests and log their results.
         run_e2e_tests_for_emulator_and_log
     fi
 
 fi
+#Log results based on the collected exit statuses.
 log_based_on_exit_status exit_status
 
-
-' 
+'
