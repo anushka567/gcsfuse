@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/googlecloudplatform/gcsfuse/v2/cfg"
+	"github.com/googlecloudplatform/gcsfuse/v2/internal/block"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/bufferedwrites"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/contentcache"
 	"github.com/googlecloudplatform/gcsfuse/v2/internal/fs/gcsfuse_errors"
@@ -363,6 +364,13 @@ func (f *FileInode) Unlink() {
 	}
 }
 
+// Returns true if the fileInode is using Buffered Write Handler.
+//
+// LOCKS_REQUIRED(f.mu)
+func (f *FileInode) IsUsingBWH() bool {
+	return f.bwh != nil
+}
+
 // Source returns a record for the GCS object from which this inode is branched. The
 // record is guaranteed not to be modified, and users must not modify it.
 //
@@ -542,9 +550,7 @@ func (f *FileInode) Read(
 	ctx context.Context,
 	dst []byte,
 	offset int64) (n int, err error) {
-	// It is not nil when streaming writes are enabled in 2 scenarios:
-	// 1. Local file
-	// 2. Empty GCS files and writes are triggered via buffered flow.
+	// It is not nil when streaming writes are enabled and bucket type is Zonal.
 	if f.bwh != nil {
 		err = fmt.Errorf("cannot read a file when upload in progress: %w", syscall.ENOTSUP)
 		return
@@ -620,7 +626,7 @@ func (f *FileInode) writeUsingBufferedWrites(ctx context.Context, data []byte, o
 
 	// Fall back to temp file for Out-Of-Order Writes.
 	if errors.Is(err, bufferedwrites.ErrOutOfOrderWrite) {
-		logger.Infof("Out-of-order write detected. Falling back to temporary file on disk.")
+		logger.Infof("Falling back to staged writes on disk for file %s (inode %d) due to err: %v.", f.Name(), f.ID(), err.Error())
 		// Finalize the object.
 		err = f.flushUsingBufferedWriteHandler()
 		if err != nil {
@@ -1003,6 +1009,10 @@ func (f *FileInode) InitBufferedWriteHandlerIfEligible(ctx context.Context) (boo
 			GlobalMaxBlocksSem:       f.globalMaxWriteBlocksSem,
 			ChunkTransferTimeoutSecs: f.config.GcsRetries.ChunkTransferTimeoutSecs,
 		})
+		if errors.Is(err, block.CantAllocateAnyBlockError) {
+			logger.Warnf("writes will fall back to staged writes due to err: %v. Please increase block limit using --write-global-max-blocks mount option.", block.CantAllocateAnyBlockError.Error())
+			return false, nil
+		}
 		if err != nil {
 			return false, fmt.Errorf("failed to create bufferedWriteHandler: %w", err)
 		}

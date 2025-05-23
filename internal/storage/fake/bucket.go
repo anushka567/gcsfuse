@@ -691,6 +691,17 @@ func (b *bucket) CreateObjectChunkWriter(ctx context.Context, req *gcs.CreateObj
 	return NewFakeObjectWriter(b, req)
 }
 
+func (b *bucket) CreateAppendableObjectWriter(ctx context.Context, req *gcs.CreateObjectChunkWriterRequest) (gcs.Writer, error) {
+	index := b.objects.find(req.Name)
+	if index != len(b.objects) {
+		obj := b.objects[index]
+		if obj.metadata.Generation == 0 {
+			return nil, fmt.Errorf("storage: ObjectHandle.Generation must be set to use NewWriterFromAppendableObject")
+		}
+	}
+	return NewFakeObjectWriter(b, &req.CreateObjectRequest)
+}
+
 func (b *bucket) FlushPendingWrites(ctx context.Context, w gcs.Writer) (*gcs.MinObject, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
