@@ -172,7 +172,7 @@ go version |& tee -a ${LOG_FILE}
 
 # Clone and checkout gcsfuse repo
 export PATH=${PATH}:/usr/local/go/bin
-git clone https://github.com/googlecloudplatform/gcsfuse |& tee -a ${LOG_FILE}
+git clone https://github.com/anushka567/gcsfuse |& tee -a ${LOG_FILE}
 cd gcsfuse
 
 # Installation of crcmod is working through pip only on rhel and centos.
