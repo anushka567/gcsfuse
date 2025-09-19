@@ -22,6 +22,7 @@ import (
 	"math"
 
 	"github.com/googlecloudplatform/gcsfuse/v3/cfg"
+	"github.com/googlecloudplatform/gcsfuse/v3/internal/cache/util"
 	"github.com/googlecloudplatform/gcsfuse/v3/internal/fs/gcsfuse_errors"
 	"github.com/googlecloudplatform/gcsfuse/v3/internal/gcsx"
 	"github.com/googlecloudplatform/gcsfuse/v3/internal/logger"
@@ -118,13 +119,18 @@ func (rr *RangeReader) ReadAt(ctx context.Context, req *gcsx.GCSReaderRequest) (
 	}
 	var err error
 
-	if req.Offset >= int64(rr.object.Size) {
-		err = io.EOF
-		return readerResponse, err
+	if req.ForceCreateReader && rr.reader != nil {
+		rr.closeReader()
+		rr.reader = nil
+		rr.cancel = nil
+		rr.start = -1
+		rr.limit = -1
 	}
 
-	readerResponse.Size, err = rr.readFromRangeReader(ctx, req.Buffer, req.Offset, req.EndOffset, rr.readType)
-
+	readerResponse.Size, err = rr.readFromExistingReader(ctx, req)
+	if errors.Is(err, gcsx.FallbackToAnotherReader) {
+		readerResponse.Size, err = rr.readFromRangeReader(ctx, req.Buffer, req.Offset, req.EndOffset, rr.readType)
+	}
 	return readerResponse, err
 }
 
@@ -174,7 +180,7 @@ func (rr *RangeReader) readFromRangeReader(ctx context.Context, p []byte, offset
 		// if the reader peters out early. That's fine, but it means we should
 		// have hit the limit above.
 		if rr.reader != nil {
-			err = fmt.Errorf("range reader returned early by skipping %d bytes", rr.limit-rr.start)
+			err = fmt.Errorf("range reader returned early by skipping %d bytes: %w", rr.limit-rr.start, util.ErrShortRead)
 			return 0, err
 		}
 
@@ -187,7 +193,7 @@ func (rr *RangeReader) readFromRangeReader(ctx context.Context, p []byte, offset
 	}
 
 	requestedDataSize := end - offset
-	metrics.CaptureGCSReadMetrics(ctx, rr.metricHandle, metrics.ReadTypeNames[readType], requestedDataSize)
+	metrics.CaptureGCSReadMetrics(rr.metricHandle, metrics.ReadTypeNames[readType], requestedDataSize)
 
 	return n, err
 }
@@ -282,7 +288,7 @@ func (rr *RangeReader) startRead(start int64, end int64) error {
 	rr.limit = end
 
 	requestedDataSize := end - start
-	metrics.CaptureGCSReadMetrics(ctx, rr.metricHandle, metrics.ReadTypeNames[metrics.ReadTypeSequential], requestedDataSize)
+	metrics.CaptureGCSReadMetrics(rr.metricHandle, metrics.ReadTypeNames[metrics.ReadTypeSequential], requestedDataSize)
 
 	return nil
 }
@@ -316,16 +322,14 @@ func (rr *RangeReader) skipBytes(offset int64) {
 // a new reader unnecessarily.
 //
 // Parameters:
-//   - offset: the starting byte position of the requested read.
-//   - p: the buffer representing the size of the requested read.
-func (rr *RangeReader) invalidateReaderIfMisalignedOrTooSmall(offset int64, p []byte) {
-	rr.skipBytes(offset)
-
+//   - startOffset: the starting byte position of the requested read.
+//   - endOffset: the ending byte position of the requested read.
+func (rr *RangeReader) invalidateReaderIfMisalignedOrTooSmall(startOffset, endOffset int64) {
 	// If we have an existing reader, but it's positioned at the wrong place,
 	// clean it up and throw it away.
 	// We will also clean up the existing reader if it can't serve the entire request.
-	dataToRead := math.Min(float64(offset+int64(len(p))), float64(rr.object.Size))
-	if rr.reader != nil && (rr.start != offset || int64(dataToRead) > rr.limit) {
+	dataToRead := math.Min(float64(endOffset), float64(rr.object.Size))
+	if rr.reader != nil && (rr.start != startOffset || int64(dataToRead) > rr.limit) {
 		rr.closeReader()
 		rr.reader = nil
 		rr.cancel = nil
@@ -335,14 +339,15 @@ func (rr *RangeReader) invalidateReaderIfMisalignedOrTooSmall(offset int64, p []
 // readFromExistingReader attempts to read data from an existing reader if one is available.
 // If a reader exists and the read is successful, the data is returned.
 // Otherwise, it returns an error indicating that a fallback to another reader is needed.
-// Make sure to call invalidateReaderIfMisalignedOrTooSmall before using this method.
-func (rr *RangeReader) readFromExistingReader(ctx context.Context, req *gcsx.GCSReaderRequest) (gcsx.ReaderResponse, error) {
+func (rr *RangeReader) readFromExistingReader(ctx context.Context, req *gcsx.GCSReaderRequest) (int, error) {
+	rr.skipBytes(req.Offset)
+	// Since we are reading from an existing reader, we only need to read what was requested.
+	endOffset := min(req.Offset + int64(len(req.Buffer)))
+
+	rr.invalidateReaderIfMisalignedOrTooSmall(req.Offset, endOffset)
 	if rr.reader != nil {
-		return rr.ReadAt(ctx, req)
+		return rr.readFromRangeReader(ctx, req.Buffer, req.Offset, endOffset, rr.readType)
 	}
 
-	return gcsx.ReaderResponse{
-		DataBuf: req.Buffer,
-		Size:    0,
-	}, gcsx.FallbackToAnotherReader
+	return 0, gcsx.FallbackToAnotherReader
 }

@@ -26,6 +26,7 @@ import (
 	"github.com/googlecloudplatform/gcsfuse/v3/tools/integration_tests/util/client"
 	"github.com/googlecloudplatform/gcsfuse/v3/tools/integration_tests/util/setup"
 	"github.com/googlecloudplatform/gcsfuse/v3/tools/integration_tests/util/setup/implicit_and_explicit_dir_setup"
+	"github.com/googlecloudplatform/gcsfuse/v3/tools/integration_tests/util/test_suite"
 )
 
 const ExplicitDirInImplicitDir = "explicitDirInImplicitDir"
@@ -58,11 +59,28 @@ func setupTestDir(dirName string) string {
 
 	return dirPath
 }
+
 func TestMain(m *testing.M) {
 	setup.ParseSetUpFlags()
 
-	// Create storage client before running tests.
+	// 1. Load and parse the common configuration.
+	cfg := test_suite.ReadConfigFile(setup.ConfigFile())
+	if len(cfg.ImplicitDir) == 0 {
+		log.Println("No configuration found for implicit_dir tests in config. Using flags instead.")
+		// Populate the config manually.
+		cfg.ImplicitDir = make([]test_suite.TestConfig, 1)
+		cfg.ImplicitDir[0].TestBucket = setup.TestBucket()
+		cfg.ImplicitDir[0].MountedDirectory = setup.MountedDirectory()
+		cfg.ImplicitDir[0].Configs = make([]test_suite.ConfigItem, 2)
+		cfg.ImplicitDir[0].Configs[0].Flags = []string{"--implicit-dirs"}
+		cfg.ImplicitDir[0].Configs[0].Compatible = map[string]bool{"flat": true, "hns": true, "zonal": true}
+		cfg.ImplicitDir[0].Configs[1].Flags = []string{"--implicit-dirs --client-protocol=grpc"}
+		cfg.ImplicitDir[0].Configs[1].Compatible = map[string]bool{"flat": true, "hns": true, "zonal": false}
+	}
+
+	// 2. Create storage client before running tests.
 	testEnv.ctx = context.Background()
+	bucketType := setup.BucketTestEnvironment(testEnv.ctx, cfg.ImplicitDir[0].TestBucket)
 	closeStorageClient := client.CreateStorageClientWithCancel(&testEnv.ctx, &testEnv.storageClient)
 	defer func() {
 		err := closeStorageClient()
@@ -71,24 +89,14 @@ func TestMain(m *testing.M) {
 		}
 	}()
 
-	flagsSet := [][]string{{"--implicit-dirs"}}
+	// 3. Build the flag sets dynamically from the config.
+	flags := setup.BuildFlagSets(cfg.ImplicitDir[0], bucketType)
 
-	// No need to run enable-hns and client-protocol GRPC configuration for ZB,
-	// as those are both by default enabled for ZB.
-	if !setup.IsZonalBucketRun() {
-		if hnsFlagSet, err := setup.AddHNSFlagForHierarchicalBucket(testEnv.ctx, testEnv.storageClient); err == nil {
-			flagsSet = append(flagsSet, hnsFlagSet)
-		}
-
-		if !testing.Short() {
-			flagsSet = append(flagsSet, []string{"--client-protocol=grpc", "--implicit-dirs"})
-		}
-	}
-
-	successCode := implicit_and_explicit_dir_setup.RunTestsForImplicitDirAndExplicitDir(flagsSet, m)
+	// 4. Run tests with the dynamically generated flags.
+	successCode := implicit_and_explicit_dir_setup.RunTestsForExplicitAndImplicitDir(&cfg.ImplicitDir[0], flags, m)
 	setup.SaveLogFileInCaseOfFailure(successCode)
 
-	// Clean up test directory created.
+	// 5. Clean up test directory created.
 	setup.CleanupDirectoryOnGCS(testEnv.ctx, testEnv.storageClient, path.Join(setup.TestBucket(), testDirName))
 	os.Exit(successCode)
 }

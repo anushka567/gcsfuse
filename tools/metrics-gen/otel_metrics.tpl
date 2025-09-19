@@ -14,7 +14,7 @@
 
 // **** DO NOT EDIT - FILE IS AUTO-GENERATED ****
 
-package optimizedmetrics
+package metrics
 
 import (
 	"context"
@@ -23,12 +23,16 @@ import (
 	"sync/atomic"
 	"time"
 
+    "github.com/googlecloudplatform/gcsfuse/v3/internal/logger"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
 
+const logInterval = 5 * time.Minute
+
 var (
+	unrecognizedAttr atomic.Value
 {{- range $metric := .Metrics -}}
 {{- if .Attributes}}
 {{- range $combination := (index $.AttrCombinations $metric.Name)}}
@@ -78,12 +82,16 @@ func (o *otelMetrics) {{toPascal .Name}}(
 		{{if $i}}, {{end}}{{toCamel $attr.Name}} {{getGoType $attr.Type}}
 	{{- end }}) {
 {{- if isCounter . }}
+	if inc < 0 {
+		logger.Errorf("Counter metric {{.Name}} received a negative increment: %d", inc)
+		return
+	}
 	{{buildSwitches .}}
 {{- else }}
 	var record histogramRecord
 	{{buildSwitches .}}
 	select {
-	  case o.ch <- histogramRecord{instrument: record.instrument, value: record.value, attributes: record.attributes, ctx: ctx}: // Do nothing
+	  case o.ch <- record: // Do nothing
 	  default: // Unblock writes to channel if it's full.
 	}
 	{{- end}}
@@ -93,12 +101,17 @@ func (o *otelMetrics) {{toPascal .Name}}(
 func NewOTelMetrics(ctx context.Context, workers int, bufferSize int) (*otelMetrics, error) {
   ch := make(chan histogramRecord, bufferSize)
   var wg sync.WaitGroup
+  startSampledLogging(ctx)
   for range workers {
 	wg.Add(1)
     go func() {
 	  defer wg.Done()
 	  for record := range ch {
-		record.instrument.Record(record.ctx, record.value, record.attributes)
+		if record.attributes != nil {
+            record.instrument.Record(record.ctx, record.value, record.attributes)
+        } else {
+            record.instrument.Record(record.ctx, record.value)
+        }
 	  }
 	}()
   }
@@ -166,5 +179,38 @@ func (o *otelMetrics) Close() {
 func conditionallyObserve(obsrv metric.Int64Observer, counter *atomic.Int64, obsrvOptions ...metric.ObserveOption) {
 	if val := counter.Load(); val > 0 {
 		obsrv.Observe(val, obsrvOptions...)
+	}
+}
+
+func updateUnrecognizedAttribute(newValue string) {
+	unrecognizedAttr.CompareAndSwap("", newValue)
+}
+
+// StartSampledLogging starts a goroutine that logs unrecognized attributes periodically.
+func startSampledLogging(ctx context.Context) {
+	// Init the atomic.Value
+	unrecognizedAttr.Store("")
+
+	go func() {
+		ticker := time.NewTicker(logInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				logUnrecognizedAttribute()
+			}
+		}
+	}()
+}
+
+// logUnrecognizedAttribute retrieves and logs any unrecognized attributes.
+func logUnrecognizedAttribute() {
+	// Atomically load and reset the attribute name, then generate a log
+	// if an unrecognized attribute was encountered.
+	if currentAttr := unrecognizedAttr.Swap("").(string); currentAttr != "" {
+		logger.Tracef("Attribute %s is not declared", currentAttr)
 	}
 }

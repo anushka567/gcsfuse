@@ -101,7 +101,7 @@ type CreateBWHandlerRequest struct {
 
 // NewBWHandler creates the bufferedWriteHandler struct.
 func NewBWHandler(req *CreateBWHandlerRequest) (bwh BufferedWriteHandler, err error) {
-	bp, err := block.NewBlockPool(req.BlockSize, req.MaxBlocksPerFile, req.GlobalMaxBlocksSem)
+	bp, err := block.NewBlockPool(req.BlockSize, req.MaxBlocksPerFile, 1, req.GlobalMaxBlocksSem)
 	if err != nil {
 		return
 	}
@@ -307,7 +307,9 @@ func (wh *bufferedWriteHandlerImpl) writeDataForTruncatedSize() error {
 
 func (wh *bufferedWriteHandlerImpl) Unlink() {
 	wh.uploadHandler.CancelUpload()
-	err := wh.blockPool.ClearFreeBlockChannel(true)
+	// Since bwh is not cleared after unlink, we will not release last block yet.
+	// Last block will be released when file handle for this file is closed.
+	err := wh.blockPool.ClearFreeBlockChannel(false)
 	if err != nil {
 		// Only logging an error in case of resource leak.
 		logger.Errorf("blockPool.ClearFreeBlockChannel() failed: %v", err)

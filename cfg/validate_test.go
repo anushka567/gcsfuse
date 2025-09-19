@@ -581,6 +581,7 @@ func Test_isValidBufferedReadConfig_ErrorScenarios(t *testing.T) {
 			GlobalMaxBlocks:      -1,
 			MaxBlocksPerHandle:   -1,
 			StartBlocksPerHandle: 1,
+			MinBlocksPerHandle:   4,
 		}},
 		{"zero_block_size", ReadConfig{
 			BlockSizeMb:          0,
@@ -588,6 +589,7 @@ func Test_isValidBufferedReadConfig_ErrorScenarios(t *testing.T) {
 			GlobalMaxBlocks:      -1,
 			MaxBlocksPerHandle:   -1,
 			StartBlocksPerHandle: 1,
+			MinBlocksPerHandle:   4,
 		}},
 		{"negative_global_max_blocks", ReadConfig{
 			BlockSizeMb:          16,
@@ -595,6 +597,7 @@ func Test_isValidBufferedReadConfig_ErrorScenarios(t *testing.T) {
 			GlobalMaxBlocks:      -2,
 			MaxBlocksPerHandle:   -1,
 			StartBlocksPerHandle: 1,
+			MinBlocksPerHandle:   4,
 		}},
 		{"negative_max_blocks_per_handle", ReadConfig{
 			BlockSizeMb:          16,
@@ -602,6 +605,23 @@ func Test_isValidBufferedReadConfig_ErrorScenarios(t *testing.T) {
 			GlobalMaxBlocks:      -1,
 			MaxBlocksPerHandle:   -2,
 			StartBlocksPerHandle: 1,
+			MinBlocksPerHandle:   4,
+		}},
+		{"negative_min_blocks_per_handle", ReadConfig{
+			BlockSizeMb:          16,
+			EnableBufferedRead:   true,
+			GlobalMaxBlocks:      -1,
+			MaxBlocksPerHandle:   -1,
+			StartBlocksPerHandle: 1,
+			MinBlocksPerHandle:   -4,
+		}},
+		{"zero_min_blocks_per_handle", ReadConfig{
+			BlockSizeMb:          16,
+			EnableBufferedRead:   true,
+			GlobalMaxBlocks:      -1,
+			MaxBlocksPerHandle:   -1,
+			StartBlocksPerHandle: 1,
+			MinBlocksPerHandle:   0,
 		}},
 	}
 
@@ -623,6 +643,7 @@ func Test_isValidBufferedReadConfig_ValidScenarios(t *testing.T) {
 			GlobalMaxBlocks:      -1,
 			MaxBlocksPerHandle:   -1,
 			StartBlocksPerHandle: 1,
+			MinBlocksPerHandle:   1,
 		}},
 		{"valid_config_2", ReadConfig{
 			BlockSizeMb:          16,
@@ -630,6 +651,7 @@ func Test_isValidBufferedReadConfig_ValidScenarios(t *testing.T) {
 			GlobalMaxBlocks:      10,
 			MaxBlocksPerHandle:   -1,
 			StartBlocksPerHandle: 1,
+			MinBlocksPerHandle:   4,
 		}},
 		{"valid_config_3", ReadConfig{
 			BlockSizeMb:          16,
@@ -637,6 +659,7 @@ func Test_isValidBufferedReadConfig_ValidScenarios(t *testing.T) {
 			GlobalMaxBlocks:      10,
 			MaxBlocksPerHandle:   5,
 			StartBlocksPerHandle: 1,
+			MinBlocksPerHandle:   5,
 		}},
 		{"valid_config_4", ReadConfig{
 			BlockSizeMb:          16,
@@ -644,6 +667,7 @@ func Test_isValidBufferedReadConfig_ValidScenarios(t *testing.T) {
 			GlobalMaxBlocks:      10,
 			MaxBlocksPerHandle:   5,
 			StartBlocksPerHandle: 10,
+			MinBlocksPerHandle:   3,
 		}},
 	}
 
@@ -734,6 +758,10 @@ func validConfig(t *testing.T) Config {
 		},
 		MetadataCache: MetadataCacheConfig{
 			ExperimentalMetadataPrefetchOnMount: "disabled",
+		},
+		Metrics: MetricsConfig{
+			Workers:    1,
+			BufferSize: 1,
 		},
 	}
 }
@@ -914,6 +942,52 @@ func TestValidateLogSeverityRanks(t *testing.T) {
 			} else {
 				assert.NoError(t, err)
 				assert.Equal(t, tc.wantLogSev.Rank(), level.Rank())
+			}
+		})
+	}
+}
+
+func TestValidateProfile(t *testing.T) {
+	t.Parallel()
+	testCases := []struct {
+		name    string
+		profile string
+		wantErr bool
+	}{
+		{
+			name:    "empty_profile",
+			profile: "",
+			wantErr: false,
+		}, {
+			name:    "profile_training",
+			profile: ProfileAIMLTraining,
+			wantErr: false,
+		}, {
+			name:    "profile_serving",
+			profile: ProfileAIMLServing,
+			wantErr: false,
+		}, {
+			name:    "profile_checkpointing",
+			profile: ProfileAIMLCheckpointing,
+			wantErr: false,
+		}, {
+			name:    "unsupported_profile",
+			profile: "unsupported-profile",
+			wantErr: true,
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			c := validConfig(t)
+			c.Profile = tc.profile
+
+			err := ValidateConfig(&mockIsSet{}, &c)
+
+			if tc.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
 			}
 		})
 	}

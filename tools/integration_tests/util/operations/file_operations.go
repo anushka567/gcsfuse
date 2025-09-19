@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/googlecloudplatform/gcsfuse/v3/internal/storage/gcs"
+	"github.com/googlecloudplatform/gcsfuse/v3/tools/integration_tests/util/setup"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/net/context"
@@ -185,6 +186,7 @@ func CloseFile(file *os.File) {
 	if err := file.Close(); err != nil {
 		log.Fatalf("error in closing: %v", err)
 	}
+	WaitForSizeUpdate(setup.IsZonalBucketRun(), time.Second)
 }
 
 func RemoveFile(filePath string) {
@@ -200,10 +202,8 @@ func ReadFileSequentially(filePath string, chunkSize int64) (content []byte, err
 
 	file, err := os.OpenFile(filePath, os.O_RDONLY|syscall.O_DIRECT, FilePermission_0600)
 	if err != nil {
-		log.Printf("Error in opening file: %v", err)
+		return nil, fmt.Errorf("error in opening file %q: %w", filePath, err)
 	}
-
-	// Closing the file at the end.
 	defer CloseFile(file)
 
 	for err != io.EOF {
@@ -278,7 +278,6 @@ func WriteFilesSequentially(t *testing.T, filePaths []string, fileSize int64, ch
 		assert.NoError(t, err)
 		offset = offset + chunkSize
 	}
-	return
 }
 
 func ReadChunkFromFile(filePath string, chunkSize int64, offset int64, flag int) (chunk []byte, err error) {
@@ -499,7 +498,7 @@ func ClearCacheControlOnGcsObject(gcsObjPath string) error {
 
 func CreateFile(filePath string, filePerms os.FileMode, t testing.TB) (f *os.File) {
 	// Creating a file shouldn't create file on GCS.
-	f, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, filePerms)
+	f, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE|os.O_TRUNC|syscall.O_DIRECT, filePerms)
 	if err != nil {
 		t.Fatalf("CreateFile(%s): %v", filePath, err)
 	}
@@ -623,6 +622,7 @@ func WriteAt(content string, offset int64, fh *os.File, t testing.TB) {
 func CloseFileShouldNotThrowError(t testing.TB, file *os.File) {
 	err := file.Close()
 	assert.NoError(t, err)
+	WaitForSizeUpdate(setup.IsZonalBucketRun(), time.Second)
 }
 
 func CloseFileShouldThrowError(t *testing.T, file *os.File) {
@@ -639,6 +639,7 @@ func SyncFile(fh *os.File, t *testing.T) {
 	if err != nil {
 		t.Fatalf("%s.Sync(): %v", fh.Name(), err)
 	}
+	WaitForSizeUpdate(setup.IsZonalBucketRun(), time.Minute)
 }
 
 func SyncFileShouldThrowError(t *testing.T, file *os.File) {
@@ -811,7 +812,7 @@ func CheckLogFileForMessage(t *testing.T, expectedLog, logFile string) bool {
 	return false
 }
 
-// This method validates sync operation on file which has already been clobbered.
+// ValidateSyncGivenThatFileIsClobbered method validates sync operation on file which has already been clobbered.
 // 1. With streaming writes sync operation only uploads pending buffers and it doesn't return any error.
 // 2. Without streaming writes file is synced with GCS and returns ESTALE error.
 func ValidateSyncGivenThatFileIsClobbered(t *testing.T, file *os.File, streamingWrites bool) {
@@ -824,29 +825,22 @@ func ValidateSyncGivenThatFileIsClobbered(t *testing.T, file *os.File, streaming
 	}
 }
 
-// This method validates write operation on file which has been renamed.
-// 1. With streaming writes write operation returns ESTALE error as buffer upload fails.
-// 2. Without streaming writes write operation succeeds.
-func ValidateWriteGivenThatFileIsRenamed(t *testing.T, file *os.File, streamingWrites bool, content string) {
-	t.Helper()
-	n, err := file.WriteString(content)
-	if streamingWrites {
-		ValidateESTALEError(t, err)
-	} else {
-		require.NoError(t, err)
-		assert.Equal(t, len(content), n)
-	}
+// CreateFileAndCopyToMntDir creates a file of given size.
+// The same file will be copied to the mounted directory as well.
+func CreateFileAndCopyToMntDir(t *testing.T, fileSize int, dirName string) (string, string) {
+	testDir := setup.SetupTestDirectory(dirName)
+	fileInLocalDisk := "test_file" + setup.GenerateRandomString(5) + ".txt"
+	filePathInLocalDisk := path.Join(os.TempDir(), fileInLocalDisk)
+	filePathInMntDir := path.Join(testDir, fileInLocalDisk)
+	CreateFileOnDiskAndCopyToMntDir(t, filePathInLocalDisk, filePathInMntDir, fileSize)
+	return filePathInLocalDisk, filePathInMntDir
 }
 
-// This method validates close operation on file which has been renamed.
-// 1. With streaming writes close operation succeeds as nothing is written on file after rename.
-// 2. Without streaming writes close operation fails as object not found on GCS.
-func ValidateCloseGivenThatFileIsRenamed(t *testing.T, file *os.File, streamingWrites bool) {
-	t.Helper()
-	err := file.Close()
-	if streamingWrites {
-		require.NoError(t, err)
-	} else {
-		ValidateESTALEError(t, err)
+// CreateFileOnDiskAndCopyToMntDir creates a file of given size and copies to given path.
+func CreateFileOnDiskAndCopyToMntDir(t *testing.T, filePathInLocalDisk string, filePathInMntDir string, fileSize int) {
+	setup.RunScriptForTestData("../util/setup/testdata/write_content_of_fix_size_in_file.sh", filePathInLocalDisk, strconv.Itoa(fileSize))
+	err := CopyFile(filePathInLocalDisk, filePathInMntDir)
+	if err != nil {
+		t.Errorf("Error in copying file:%v", err)
 	}
 }

@@ -68,12 +68,13 @@ func (t *readManagerTest) readManagerConfig(fileCacheEnable bool, bufferedReadEn
 				MaxBlocksPerHandle:   10,
 				BlockSizeMb:          1,
 				StartBlocksPerHandle: 2,
+				MinBlocksPerHandle:   2,
 			},
 		},
 		GlobalMaxBlocksSem: semaphore.NewWeighted(20),
 	}
 	if bufferedReadEnable {
-		t.workerPool, _ = workerpool.NewStaticWorkerPool(5, 20)
+		t.workerPool, _ = workerpool.NewStaticWorkerPool(5, 20, 25)
 		t.workerPool.Start()
 		config.WorkerPool = t.workerPool
 	}
@@ -253,7 +254,7 @@ func (t *readManagerTest) Test_ReadAt_InvalidOffset() {
 func (t *readManagerTest) Test_ReadAt_NoExistingReader() {
 	// The bucket should be called to set up a new reader.
 	t.mockBucket.On("NewReaderWithReadHandle", mock.Anything, mock.Anything).Return(nil, errors.New("network error"))
-	t.mockBucket.On("BucketType", mock.Anything).Return(t.bucketType).Times(2)
+	t.mockBucket.On("BucketType", mock.Anything).Return(t.bucketType)
 	t.mockBucket.On("Name").Return("test-bucket")
 
 	_, err := t.readAt(0, 1)
@@ -267,7 +268,7 @@ func (t *readManagerTest) Test_ReadAt_ReaderFailsWithTimeout() {
 	r := iotest.OneByteReader(iotest.TimeoutReader(strings.NewReader("xxx")))
 	rc := &fake.FakeReader{ReadCloser: io.NopCloser(r)}
 	t.mockBucket.On("NewReaderWithReadHandle", mock.Anything, mock.Anything).Return(rc, nil).Once()
-	t.mockBucket.On("BucketType", mock.Anything).Return(t.bucketType).Times(1)
+	t.mockBucket.On("BucketType", mock.Anything).Return(t.bucketType).Times(3)
 
 	_, err := t.readAt(0, 3)
 
@@ -278,7 +279,7 @@ func (t *readManagerTest) Test_ReadAt_ReaderFailsWithTimeout() {
 
 func (t *readManagerTest) Test_ReadAt_FileClobbered() {
 	t.mockBucket.On("NewReaderWithReadHandle", mock.Anything, mock.Anything).Return(nil, &gcs.NotFoundError{})
-	t.mockBucket.On("BucketType", mock.Anything).Return(t.bucketType).Times(1)
+	t.mockBucket.On("BucketType", mock.Anything).Return(t.bucketType).Times(3)
 	t.mockBucket.On("Name").Return("test-bucket")
 
 	_, err := t.readAt(1, 3)

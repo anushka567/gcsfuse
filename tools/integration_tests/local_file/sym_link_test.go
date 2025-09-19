@@ -18,12 +18,13 @@ package local_file
 import (
 	"os"
 	"path"
-	"strings"
 	"testing"
 
 	. "github.com/googlecloudplatform/gcsfuse/v3/tools/integration_tests/util/client"
 	"github.com/googlecloudplatform/gcsfuse/v3/tools/integration_tests/util/operations"
 	"github.com/googlecloudplatform/gcsfuse/v3/tools/integration_tests/util/setup"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func createAndVerifySymLink(t *testing.T) (filePath, symlink string, fh *os.File) {
@@ -42,13 +43,12 @@ func createAndVerifySymLink(t *testing.T) (filePath, symlink string, fh *os.File
 	return
 }
 
-func (t *CommonLocalFileTestSuite) TestCreateSymlinkForLocalFile() {
+func (t *LocalFileTestSuite) TestCreateSymlinkForLocalFile() {
 	_, _, fh := createAndVerifySymLink(t.T())
-	CloseFileAndValidateContentFromGCS(ctx, storageClient, fh, testDirName,
-		FileName1, FileContents, t.T())
+	CloseFileAndValidateContentFromGCS(ctx, storageClient, fh, testDirName, FileName1, FileContents, t.T())
 }
 
-func (t *CommonLocalFileTestSuite) TestReadSymlinkForDeletedLocalFile() {
+func (t *LocalFileTestSuite) TestReadSymlinkForDeletedLocalFile() {
 	filePath, symlink, fh := createAndVerifySymLink(t.T())
 	// Remove filePath and then close the fileHandle to avoid syncing to GCS.
 	operations.RemoveFile(filePath)
@@ -57,7 +57,22 @@ func (t *CommonLocalFileTestSuite) TestReadSymlinkForDeletedLocalFile() {
 
 	// Reading symlink should fail.
 	_, err := os.Stat(symlink)
-	if err == nil || !strings.Contains(err.Error(), "no such file or directory") {
-		t.T().Fatalf("Reading symlink for deleted local file did not fail.")
-	}
+
+	require.Error(t.T(), err)
+	assert.True(t.T(), os.IsNotExist(err), "Reading symlink for deleted local file should have failed with 'no such file or directory'. Got: %v", err)
+}
+
+func (t *LocalFileTestSuite) TestRenameSymlinkForLocalFile() {
+	filePath, symlinkPath, fh := createAndVerifySymLink(t.T())
+	newSymlinkPath := path.Join(testDirPath, "newSymlink")
+
+	err := os.Rename(symlinkPath, newSymlinkPath)
+
+	require.NoError(t.T(), err, "os.Rename failed for symlink")
+	_, err = os.Lstat(symlinkPath)
+	require.Error(t.T(), err)
+	assert.True(t.T(), os.IsNotExist(err), "Old symlink should not exist after rename. err: %v", err)
+	operations.VerifyReadLink(filePath, newSymlinkPath, t.T())
+	operations.VerifyReadFile(newSymlinkPath, FileContents, t.T())
+	CloseFileAndValidateContentFromGCS(ctx, storageClient, fh, testDirName, FileName1, FileContents, t.T())
 }

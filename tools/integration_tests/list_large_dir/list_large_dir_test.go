@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -25,6 +25,7 @@ import (
 	"github.com/googlecloudplatform/gcsfuse/v3/tools/integration_tests/util/client"
 	"github.com/googlecloudplatform/gcsfuse/v3/tools/integration_tests/util/mounting/static_mounting"
 	"github.com/googlecloudplatform/gcsfuse/v3/tools/integration_tests/util/setup"
+	"github.com/googlecloudplatform/gcsfuse/v3/tools/integration_tests/util/test_suite"
 )
 
 const prefixFileInDirectoryWithTwelveThousandFiles = "fileInDirectoryWithTwelveThousandFiles"
@@ -41,10 +42,28 @@ var (
 )
 
 func TestMain(m *testing.M) {
-	setup.ExitWithFailureIfBothTestBucketAndMountedDirectoryFlagsAreNotSet()
+	setup.ParseSetUpFlags()
 
-	// Create common storage client to be used in test.
+	// 1. Load and parse the common configuration.
+	cfg := test_suite.ReadConfigFile(setup.ConfigFile())
+	if len(cfg.ListLargeDir) == 0 {
+		log.Println("No configuration found for list large dir tests in config. Using flags instead.")
+		// Populate the config manually.
+		cfg.ListLargeDir = make([]test_suite.TestConfig, 1)
+		cfg.ListLargeDir[0].TestBucket = setup.TestBucket()
+		cfg.ListLargeDir[0].MountedDirectory = setup.MountedDirectory()
+		cfg.ListLargeDir[0].Configs = make([]test_suite.ConfigItem, 2)
+		cfg.ListLargeDir[0].Configs[0].Flags = []string{"--implicit-dirs=true --stat-cache-ttl=0 --kernel-list-cache-ttl-secs=-1"}
+		cfg.ListLargeDir[0].Configs[0].Compatible = map[string]bool{"flat": true, "hns": true, "zonal": true}
+		cfg.ListLargeDir[0].Configs[1].Flags = []string{
+			"--client-protocol=grpc --implicit-dirs=true --stat-cache-ttl=0 --kernel-list-cache-ttl-secs=-1",
+		}
+		cfg.ListLargeDir[0].Configs[1].Compatible = map[string]bool{"flat": true, "hns": true, "zonal": false}
+	}
+
+	// 2. Create storage client before running tests.
 	ctx = context.Background()
+	bucketType := setup.BucketTestEnvironment(ctx, cfg.ListLargeDir[0].TestBucket)
 	closeStorageClient := client.CreateStorageClientWithCancel(&ctx, &storageClient)
 	defer func() {
 		err := closeStorageClient()
@@ -53,19 +72,19 @@ func TestMain(m *testing.M) {
 		}
 	}()
 
-	flags := [][]string{{"--implicit-dirs", "--stat-cache-ttl=0", "--kernel-list-cache-ttl-secs=-1"}}
-	// Don't run for grpc if -short flat is passed.
-	// Don't run for grpc for zonal bucket as zonal buckets by default use grpc.
-	if !testing.Short() && !setup.IsZonalBucketRun() {
-		flags = append(flags, []string{"--client-protocol=grpc", "--implicit-dirs=true", "--stat-cache-ttl=0", "--kernel-list-cache-ttl-secs=-1"})
+	// 3. To run mountedDirectory tests, we need both testBucket and mountedDirectory
+	// flags to be set, as ListLargeDir tests validates content from the bucket.
+	if cfg.ListLargeDir[0].MountedDirectory != "" && cfg.ListLargeDir[0].TestBucket != "" {
+		os.Exit(setup.RunTestsForMountedDirectory(cfg.ListLargeDir[0].MountedDirectory, m))
 	}
 
-	// Run tests for mountedDirectory only if --mountedDirectory flag is set.
-	setup.RunTestsForMountedDirectoryFlag(m)
+	// Run tests for testBucket
+	// 4. Build the flag sets dynamically from the config.
+	flags := setup.BuildFlagSets(cfg.ListLargeDir[0], bucketType)
 
-	setup.SetUpTestDirForTestBucketFlag()
+	setup.SetUpTestDirForTestBucket(cfg.ListLargeDir[0].TestBucket)
 
-	successCode := static_mounting.RunTests(flags, m)
+	successCode := static_mounting.RunTestsWithConfigFile(&cfg.ListLargeDir[0], flags, m)
 
 	os.Exit(successCode)
 }

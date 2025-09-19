@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,22 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package local_file
+package metrics
 
-import (
-	"github.com/googlecloudplatform/gcsfuse/v3/tools/integration_tests/util/test_suite"
-	"github.com/stretchr/testify/suite"
-)
-
-// //////////////////////////////////////////////////////////////////////
-// Boilerplate
-// //////////////////////////////////////////////////////////////////////
-
-type localFileTestSuite struct {
-	CommonLocalFileTestSuite
-	suite.Suite
-}
-
-type CommonLocalFileTestSuite struct {
-	test_suite.TestifySuite
+// CaptureGCSReadMetrics is a helper function to encapsulate the logic for recording
+// GCS read-related metrics.
+func CaptureGCSReadMetrics(mh MetricHandle, readType string, downloadBytes int64) {
+	mh.GcsReadCount(1, readType)
+	mh.GcsDownloadBytesCount(downloadBytes, readType)
 }

@@ -29,6 +29,9 @@ const (
 	ParallelDownloadsPerFileInvalidValueError = "the value of parallel-downloads-per-file for file-cache can't be less than 1"
 	DownloadChunkSizeMBInvalidValueError      = "the value of download-chunk-size-mb for file-cache can't be less than 1"
 	MaxParallelDownloadsCantBeZeroError       = "the value of max-parallel-downloads for file-cache must not be 0 when enable-parallel-downloads is true"
+	ProfileAIMLTraining                       = "aiml-training"
+	ProfileAIMLServing                        = "aiml-serving"
+	ProfileAIMLCheckpointing                  = "aiml-checkpointing"
 )
 
 func isValidLogRotateConfig(config *LogRotateLoggingConfig) error {
@@ -242,6 +245,25 @@ func isValidBufferedReadConfig(rc *ReadConfig) error {
 		return fmt.Errorf("invalid value of read-max-blocks-per-handle: %d; should be >=1 or -1 (for infinite)", rc.MaxBlocksPerHandle)
 	}
 
+	if rc.MinBlocksPerHandle < 1 || (rc.MaxBlocksPerHandle != -1 && rc.MinBlocksPerHandle > rc.MaxBlocksPerHandle) {
+		return fmt.Errorf("invalid value of read-min-blocks-per-handle: %d; should be >=1 or less than or equal to read-max-blocks-per-handle: %d", rc.MinBlocksPerHandle, rc.MaxBlocksPerHandle)
+	}
+
+	return nil
+}
+
+func isValidOptimizationProfile(config *Config) error {
+	if config.Profile == "" {
+		return nil
+	}
+
+	switch config.Profile {
+	case ProfileAIMLServing, ProfileAIMLCheckpointing, ProfileAIMLTraining:
+		// Supported profiles.
+	default:
+		return fmt.Errorf("Unknown profile: %q", config.Profile)
+	}
+
 	return nil
 }
 
@@ -303,6 +325,10 @@ func ValidateConfig(v isSet, config *Config) error {
 
 	if err = isValidBufferedReadConfig(&config.Read); err != nil {
 		return fmt.Errorf("error parsing buffered read config: %w", err)
+	}
+
+	if err = isValidOptimizationProfile(config); err != nil {
+		return fmt.Errorf("error parsing optimize profile config: %w", err)
 	}
 
 	return nil

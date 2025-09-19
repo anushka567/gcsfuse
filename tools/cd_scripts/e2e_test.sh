@@ -18,6 +18,17 @@ set -x
 # Exit immediately if a command exits with a non-zero status.
 set -e
 
+# Install wget
+if command -v apt-get &> /dev/null; then
+    # For Debian/Ubuntu-based systems
+    sudo apt-get update && sudo apt-get install -y wget
+elif command -v yum &> /dev/null; then
+    # For RHEL/CentOS-based systems
+    sudo yum install -y wget
+else
+    exit 1
+fi
+
 # Upgrade gcloud
 echo "Upgrade gcloud version"
 gcloud version
@@ -174,6 +185,7 @@ go version |& tee -a ${LOG_FILE}
 export PATH=${PATH}:/usr/local/go/bin
 git clone https://github.com/anushka567/gcsfuse |& tee -a ${LOG_FILE}
 cd gcsfuse
+bash ./perfmetrics/scripts/install_latest_gcloud.sh
 
 # Installation of crcmod is working through pip only on rhel and centos.
 # For debian and ubuntu, we are installing through sudo apt.
@@ -214,6 +226,7 @@ TEST_DIR_PARALLEL=(
   "release_version"
   "readdirplus"
   "dentry_cache"
+  "buffered_read"
 )
 
 # These tests never become parallel as they are changing bucket permissions.
@@ -316,7 +329,7 @@ function run_parallel_tests() {
   for test_dir_p in "${test_array[@]}"
   do
     test_path_parallel="./tools/integration_tests/$test_dir_p"
-    # To make it clear whether tests are running on a flat or HNS bucket, We kept the log file naming
+    # To make it clear whether tests are running on a flat or HNS or zonal bucket, We kept the log file naming
     # convention to include the bucket name as a suffix (e.g., package_name_bucket_name).
     local log_file="/tmp/${test_dir_p}_${BUCKET_NAME}.log"
     echo "$log_file" >> "$TEST_LOGS_FILE"

@@ -26,13 +26,13 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime/debug"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"cloud.google.com/go/storage"
-	"github.com/googlecloudplatform/gcsfuse/v3/tools/integration_tests/util/operations"
+	"cloud.google.com/go/storage/experimental"
+	"github.com/googlecloudplatform/gcsfuse/v3/tools/integration_tests/util/test_suite"
 	"github.com/googlecloudplatform/gcsfuse/v3/tools/util"
 	"go.opentelemetry.io/contrib/detectors/gcp"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -48,6 +48,7 @@ var testInstalledPackage = flag.Bool("testInstalledPackage", false, "[Optional] 
 var testOnTPCEndPoint = flag.Bool("testOnTPCEndPoint", false, "Run tests on TPC endpoint only when the flag value is true.")
 var gcsfusePreBuiltDir = flag.String("gcsfuse_prebuilt_dir", "", "Path to the pre-built GCSFuse directory containing bin/gcsfuse and sbin/mount.gcsfuse.")
 var profileLabelForMountedDirTest = flag.String("profile_label", "", "To pass profile-label for the cloud-profile test.")
+var configFile = flag.String("config-file", "", "Common GCSFuse config file to run tests with.")
 
 const (
 	FilePermission_0600               = 0600
@@ -90,8 +91,8 @@ func IsZonalBucketRun() bool {
 	return *isZonalBucketRun
 }
 
-func IsIntegrationTest() bool {
-	return *integrationTest
+func SetIsZonalBucketRun(val bool) {
+	*isZonalBucketRun = val
 }
 
 func TestBucket() string {
@@ -285,9 +286,13 @@ func SaveLogFileAsArtifact(logFile, artifactName string) {
 		logDir = TestDir()
 	}
 	artifactPath := path.Join(logDir, artifactName)
-	err := operations.CopyFile(logFile, artifactPath)
+	logFileData, err := os.ReadFile(logFile)
 	if err != nil {
-		log.Fatalf("Error in copying logfile to artifact path: %v", err)
+		log.Fatalf("Error reading log file: %v", err)
+	}
+	err = os.WriteFile(artifactPath, logFileData, 0600)
+	if err != nil {
+		log.Fatalf("Error in writing log file to artifacts directory: %v", err)
 	}
 	log.Printf("Log file saved at %v", artifactPath)
 }
@@ -339,6 +344,10 @@ func ParseSetUpFlags() {
 	}
 }
 
+func ConfigFile() string {
+	return *configFile
+}
+
 func IgnoreTestIfIntegrationTestFlagIsSet(t *testing.T) {
 	flag.Parse()
 
@@ -375,31 +384,36 @@ func ExitWithFailureIfBothTestBucketAndMountedDirectoryFlagsAreNotSet() {
 	}
 }
 
-func ExitWithFailureIfMountedDirectoryIsSetOrTestBucketIsNotSet() {
-	ParseSetUpFlags()
-
-	if *testBucket == "" {
-		log.Print("Please pass the name of bucket to be mounted to --testBucket flag. It is required for this test.")
-		os.Exit(1)
-	}
-
-	if *mountedDirectory != "" {
-		log.Print("Please do not pass the mountedDirectory at test runtime. It is not supported for this test.")
-		os.Exit(1)
-	}
-}
-
+// Deprecated: Use RunTestsForMountedDirectory instead.
+// TODO(b/438068132): cleanup deprecated methods after migration is complete.
 func RunTestsForMountedDirectoryFlag(m *testing.M) {
 	// Execute tests for the mounted directory.
 	if *mountedDirectory != "" {
-		mntDir = *mountedDirectory
-		successCode := ExecuteTest(m)
-		os.Exit(successCode)
+		os.Exit(RunTestsForMountedDirectory(*mountedDirectory, m))
 	}
 }
 
+// RunTestsForMountedDirectory executes tests for the mounted directory.
+// User is expected to ensure that this function is called when mounted directory is set.
+// Returns exit code.
+func RunTestsForMountedDirectory(mountedDirectory string, m *testing.M) int {
+	// Execute tests for the mounted directory.
+	if mountedDirectory == "" {
+		log.Println("RunTestsForMountedDirectory failed: Mounted directory is not set.")
+		return 1
+	}
+	mntDir = mountedDirectory
+	return ExecuteTest(m)
+}
+
+// Deprecated: Use SetUpTestDirForTestBucket instead.
+// TODO(b/438068132): cleanup deprecated methods after migration is complete.
 func SetUpTestDirForTestBucketFlag() {
-	testBucketName := TestBucket()
+	SetUpTestDirForTestBucket(TestBucket())
+}
+
+func SetUpTestDirForTestBucket(testBucket string) {
+	testBucketName := testBucket
 	if testBucketName == "" {
 		log.Fatal("Not running TestBucket tests as --testBucket flag is not set.")
 	}
@@ -509,8 +523,14 @@ func AreBothMountedDirectoryAndTestBucketFlagsSet() bool {
 	return false
 }
 
+// Deprecated: use ResolveIsHierarchicalBucket instead.
+// TODO(b/438068132): cleanup deprecated methods after migration is complete.
 func IsHierarchicalBucket(ctx context.Context, storageClient *storage.Client) bool {
-	attrs, err := storageClient.Bucket(TestBucket()).Attrs(ctx)
+	return ResolveIsHierarchicalBucket(ctx, TestBucket(), storageClient)
+}
+
+func ResolveIsHierarchicalBucket(ctx context.Context, testBucket string, storageClient *storage.Client) bool {
+	attrs, err := storageClient.Bucket(testBucket).Attrs(ctx)
 	if err != nil {
 		return false
 	}
@@ -519,6 +539,83 @@ func IsHierarchicalBucket(ctx context.Context, storageClient *storage.Client) bo
 	}
 
 	return false
+}
+
+// BucketTestEnvironment sets the global testBucket and isZonalBucket variable
+// based on the bucket type.
+func BucketTestEnvironment(ctx context.Context, bucketName string) string {
+	SetTestBucket(bucketName)
+	bucketType, err := BucketType(ctx, bucketName)
+	if err != nil {
+		log.Fatalf("BucketType failed: %v", err)
+	}
+	if bucketType == ZonalBucket {
+		SetIsZonalBucketRun(true)
+	}
+
+	return bucketType
+}
+
+const FlatBucket = "flat"
+const HNSBucket = "hns"
+const ZonalBucket = "zonal"
+
+func BucketType(ctx context.Context, testBucket string) (bucketType string, err error) {
+	// For only-dir mounts bucket name is passed as <test_bucket>/<only_dir> by GKE.
+	testBucket = strings.Split(testBucket, "/")[0]
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	storageClient, err := storage.NewGRPCClient(ctx, experimental.WithGRPCBidiReads())
+	if err != nil {
+		return "", fmt.Errorf("failed to create storage client: %w", err)
+	}
+	attrs, err := storageClient.Bucket(testBucket).Attrs(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to get bucket attributes: %w", err)
+	}
+	if attrs.LocationType == "zone" {
+		return ZonalBucket, nil
+	}
+	if attrs.HierarchicalNamespace != nil && attrs.HierarchicalNamespace.Enabled {
+		return HNSBucket, nil
+	}
+	return FlatBucket, nil
+}
+
+// AddCacheDirToFlags iterates over a set of flag slices and updates any empty "--cache-dir" flags.
+func AddCacheDirToFlags(flagSets [][]string, testname string) [][]string {
+	for i := range flagSets {
+		for j := range flagSets[i] {
+			if flagSets[i][j] == "--cache-dir=" {
+				flagSets[i][j] = fmt.Sprintf("--cache-dir=%s/cache-dir-%s-%s", os.TempDir(), testname, GenerateRandomString(4))
+			}
+		}
+	}
+	return flagSets
+}
+
+// BuildFlagSets dynamically builds a list of flag sets based on bucket compatibility.
+// bucketType should be "flat", "hns", or "zonal".
+func BuildFlagSets(cfg test_suite.TestConfig, bucketType string) [][]string {
+	var dynamicFlags [][]string
+
+	// 1. Iterate through each defined test configuration (e.g., HTTP, gRPC).
+	for _, testCase := range cfg.Configs {
+		// 2. Check if the current test case is compatible with the bucket type.
+		// This is a safe and concise way to check the map.
+		if isCompatible, ok := testCase.Compatible[bucketType]; ok && isCompatible {
+			// 3. If compatible, process its flags and add them to the result.
+			for _, flagString := range testCase.Flags {
+				dynamicFlags = append(dynamicFlags, strings.Fields(flagString))
+			}
+		}
+	}
+	return dynamicFlags
+}
+
+// SetTestBucket sets the testBucket global variable.
+func SetTestBucket(bucketName string) {
+	testBucket = &bucketName
 }
 
 // Explicitly set the enable-hns config flag to true when running tests on the HNS bucket.
@@ -618,26 +715,6 @@ func AppendFlagsToAllFlagsInTheFlagsSet(flagsSet *[][]string, newFlags ...string
 		}
 	}
 	*flagsSet = resultFlagsSet
-}
-
-// CreateFileAndCopyToMntDir creates a file of given size.
-// The same file will be copied to the mounted directory as well.
-func CreateFileAndCopyToMntDir(t *testing.T, fileSize int, dirName string) (string, string) {
-	testDir := SetupTestDirectory(dirName)
-	fileInLocalDisk := "test_file" + GenerateRandomString(5) + ".txt"
-	filePathInLocalDisk := path.Join(os.TempDir(), fileInLocalDisk)
-	filePathInMntDir := path.Join(testDir, fileInLocalDisk)
-	CreateFileOnDiskAndCopyToMntDir(t, filePathInLocalDisk, filePathInMntDir, fileSize)
-	return filePathInLocalDisk, filePathInMntDir
-}
-
-// CreateFileOnDiskAndCopyToMntDir creates a file of given size and copies to given path.
-func CreateFileOnDiskAndCopyToMntDir(t *testing.T, filePathInLocalDisk string, filePathInMntDir string, fileSize int) {
-	RunScriptForTestData("../util/setup/testdata/write_content_of_fix_size_in_file.sh", filePathInLocalDisk, strconv.Itoa(fileSize))
-	err := operations.CopyFile(filePathInLocalDisk, filePathInMntDir)
-	if err != nil {
-		t.Errorf("Error in copying file:%v", err)
-	}
 }
 
 func CreateProxyServerLogFile(t *testing.T) string {

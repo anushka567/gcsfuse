@@ -31,6 +31,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/exemplar"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
@@ -39,7 +40,7 @@ import (
 const serviceName = "gcsfuse"
 const cloudMonitoringMetricPrefix = "custom.googleapis.com/gcsfuse/"
 
-var allowedMetricPrefixes = []string{"fs/", "gcs/", "file_cache/"}
+var allowedMetricPrefixes = []string{"fs/", "gcs/", "file_cache/", "buffered_read/"}
 
 // SetupOTelMetricExporters sets up the metrics exporters
 func SetupOTelMetricExporters(ctx context.Context, c *cfg.Config) (shutdownFn common.ShutdownFn) {
@@ -61,7 +62,7 @@ func SetupOTelMetricExporters(ctx context.Context, c *cfg.Config) (shutdownFn co
 		options = append(options, metric.WithResource(res))
 	}
 
-	options = append(options, metric.WithView(dropDisallowedMetricsView))
+	options = append(options, metric.WithView(dropDisallowedMetricsView), metric.WithExemplarFilter(exemplar.AlwaysOffFilter))
 
 	meterProvider := metric.NewMeterProvider(options...)
 	shutdownFns = append(shutdownFns, meterProvider.Shutdown)

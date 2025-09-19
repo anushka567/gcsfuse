@@ -23,13 +23,11 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"cloud.google.com/go/storage"
 	"cloud.google.com/go/storage/control/apiv2/controlpb"
 	"github.com/googleapis/gax-go/v2"
-	"github.com/googlecloudplatform/gcsfuse/v3/internal/logger"
 	"github.com/googlecloudplatform/gcsfuse/v3/internal/storage/gcs"
 	"github.com/googlecloudplatform/gcsfuse/v3/internal/storage/storageutil"
 	"google.golang.org/api/iterator"
@@ -40,11 +38,10 @@ const FullBucketPathHNS = "projects/_/buckets/%s"
 
 type bucketHandle struct {
 	gcs.Bucket
-	bucket             *storage.BucketHandle
-	bucketName         string
-	bucketType         *gcs.BucketType
-	controlClient      StorageControlClient
-	enableRapidAppends bool
+	bucket        *storage.BucketHandle
+	bucketName    string
+	bucketType    *gcs.BucketType
+	controlClient StorageControlClient
 }
 
 func (bh *bucketHandle) Name() string {
@@ -93,8 +90,7 @@ func (bh *bucketHandle) NewReaderWithReadHandle(
 	// This produces the exact same object and generation and does not check if
 	// the generation is still the newest one.
 	if req.ReadHandle != nil {
-		// TODO: b/432639555 fix code to use read handle from previous read.
-		obj = obj.ReadHandle([]byte("opaque-handle"))
+		obj = obj.ReadHandle(req.ReadHandle)
 	}
 
 	// NewRangeReader creates a "storage.Reader" object which is also io.ReadCloser since it contains both Read() and Close() methods present in io.ReadCloser interface.
@@ -144,12 +140,6 @@ func (bh *bucketHandle) StatObject(ctx context.Context,
 		err = fmt.Errorf("error in fetching object attributes: %w", err)
 		return
 	}
-	if attrs.Finalized.IsZero() && isGCSObject(attrs) {
-		if err = bh.fetchLatestSizeOfUnfinalizedObject(ctx, attrs); err != nil {
-			err = fmt.Errorf("failed to fetch the latest size of unfinalized object %q: %w", attrs.Name, err)
-			return
-		}
-	}
 
 	// Converting attrs to type *Object
 	o := storageutil.ObjectAttrsToBucketObject(attrs)
@@ -159,29 +149,6 @@ func (bh *bucketHandle) StatObject(ctx context.Context,
 	}
 
 	return
-}
-
-// Note: This is not production ready code and will be removed once StatObject
-// requests return correct attr values for appendable objects.
-func (bh *bucketHandle) fetchLatestSizeOfUnfinalizedObject(ctx context.Context, attrs *storage.ObjectAttrs) error {
-	if bh.BucketType().Zonal && bh.enableRapidAppends {
-		// Get object handle
-		obj := bh.bucket.Object(attrs.Name)
-		// Create a new reader
-		reader, err := obj.NewRangeReader(ctx, 0, 0)
-		if err != nil {
-			return fmt.Errorf("failed to create zero-byte reader for object %q: %v", attrs.Name, err)
-		}
-		err = reader.Close()
-		if err != nil {
-			logger.Warnf("failed to close zero-byte reader for object %q: %v", attrs.Name, err)
-		}
-
-		// Set the size
-		attrs.Size = reader.Attrs.Size
-		return nil
-	}
-	return nil
 }
 
 func (bh *bucketHandle) getObjectHandleWithPreconditionsSet(req *gcs.CreateObjectRequest) *storage.ObjectHandle {
@@ -230,8 +197,12 @@ func (bh *bucketHandle) CreateObject(ctx context.Context, req *gcs.CreateObjectR
 	wc.ProgressFunc = req.CallBack
 	// All objects in zonal buckets must be appendable.
 	wc.Append = bh.BucketType().Zonal
-	// FinalizeOnClose should be true for all writes for now.
-	wc.FinalizeOnClose = true
+	// Objects in zonal buckets should not finalized.
+	// When writer.Append is false,then this parameter is anyways ignored.
+	// Refer: https://github.com/googleapis/google-cloud-go/blob/main/storage/writer.go#L135
+	if bh.BucketType().Zonal {
+		wc.FinalizeOnClose = false
+	}
 
 	// Copy the contents to the writer.
 	if _, err = io.Copy(wc, req.Contents); err != nil {
@@ -258,13 +229,14 @@ func (bh *bucketHandle) CreateObjectChunkWriter(ctx context.Context, req *gcs.Cr
 	wc := &ObjectWriter{obj.NewWriter(ctx)}
 	wc.ChunkSize = chunkSize
 	wc.Writer = storageutil.SetAttrsInWriter(wc.Writer, req)
-	// TODO(b/424091803): Uncomment once chunk transfer timeout issue in resumable uploads is fixed in dependencies.
-	// wc.ChunkTransferTimeout = time.Duration(req.ChunkTransferTimeoutSecs) * time.Second
+	wc.ChunkTransferTimeout = time.Duration(req.ChunkTransferTimeoutSecs) * time.Second
 	wc.ProgressFunc = callBack
 	// All objects in zonal buckets must be appendable.
 	wc.Append = bh.BucketType().Zonal
-	// FinalizeOnClose should be true for all writes for now.
-	wc.FinalizeOnClose = true
+	// Objects in zonal buckets should not finalized.
+	if bh.BucketType().Zonal {
+		wc.FinalizeOnClose = false
+	}
 
 	return wc, nil
 }
@@ -423,12 +395,6 @@ func (bh *bucketHandle) ListObjects(ctx context.Context, req *gcs.ListObjectsReq
 		if err != nil {
 			err = fmt.Errorf("error in iterating through objects: %w", err)
 			return
-		}
-		if attrs.Finalized.IsZero() && isGCSObject(attrs) {
-			if err = bh.fetchLatestSizeOfUnfinalizedObject(ctx, attrs); err != nil {
-				err = fmt.Errorf("failed to fetch the latest size of unfinalized object %q: %w", attrs.Name, err)
-				return
-			}
 		}
 
 		// Prefix attribute will be set for the objects returned as part of Prefix[] array in list response.
@@ -697,6 +663,10 @@ func (bh *bucketHandle) NewMultiRangeDownloader(
 		obj = obj.ReadCompressed(true)
 	}
 
+	if req.ReadHandle != nil {
+		obj = obj.ReadHandle(req.ReadHandle)
+	}
+
 	mrd, err = obj.NewMultiRangeDownloader(ctx)
 	return
 }
@@ -707,13 +677,4 @@ func (bh *bucketHandle) GCSName(obj *gcs.MinObject) string {
 
 func isStorageConditionsNotEmpty(conditions storage.Conditions) bool {
 	return conditions != (storage.Conditions{})
-}
-
-// isGCSObject determines whether the GCS resource represented by attrs is a GCS object
-// and not a folder/directory resource.
-func isGCSObject(attrs *storage.ObjectAttrs) bool {
-	if !strings.HasSuffix(attrs.Name, "/") && attrs.Prefix == "" && attrs.Name != "" {
-		return true
-	}
-	return false
 }

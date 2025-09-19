@@ -250,6 +250,12 @@ func generateCombinations(attributes []Attribute) []AttrCombination {
 	return result
 }
 
+func handleDefaultInSwitchCase(level int, attrName string, builder *strings.Builder) {
+	builder.WriteString(fmt.Sprintf("%sdefault:\n", strings.Repeat("\t", level+2)))
+	builder.WriteString(fmt.Sprintf("%supdateUnrecognizedAttribute(%s)\n", strings.Repeat("\t", level+3), toCamel(attrName)))
+	builder.WriteString(fmt.Sprintf("%sreturn\n", strings.Repeat("\t", level+3)))
+}
+
 func validateMetric(m Metric) error {
 	if m.Name == "" {
 		return fmt.Errorf("metric-name is required")
@@ -381,13 +387,16 @@ func buildSwitches(metric Metric) string {
 			currentCombo := append(combo, AttrValuePair{Name: attr.Name, Type: attr.Type, Value: val})
 			recorder(level+1, currentCombo)
 		}
+		if attr.Type == "string" {
+			handleDefaultInSwitchCase(level, attr.Name, &builder)
+		}
 		builder.WriteString(fmt.Sprintf("%s}\n", indent))
 	}
 
 	if len(metric.Attributes) == 0 {
 		if metric.Type == "int_histogram" {
 			unitMethod := getUnitMethod(metric.Unit)
-			builder.WriteString(fmt.Sprintf("\trecord = histogramRecord{instrument: o.%s, value: latency%s}\n", toCamel(metric.Name), unitMethod))
+			builder.WriteString(fmt.Sprintf("\trecord = histogramRecord{ctx: ctx, instrument: o.%s, value: latency%s}\n", toCamel(metric.Name), unitMethod))
 		} else if metric.Type == "int_counter" {
 			atomicName := getAtomicName(metric.Name, AttrCombination{})
 			builder.WriteString(fmt.Sprintf("\to.%s.Add(inc)\n", atomicName))
