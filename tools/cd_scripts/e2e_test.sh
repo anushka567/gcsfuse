@@ -145,7 +145,7 @@ then
 else
 #  For rhel and centos
     # uname can be aarch or x86_64
-    uname=$(uname -i)
+    uname=$(uname -m)
 
     if [[ $uname == "x86_64" ]]; then
       architecture="amd64"
@@ -239,25 +239,31 @@ TEST_DIR_NON_PARALLEL=(
 
 # For Zonal buckets : Test directory arrays
 TEST_DIR_PARALLEL_ZONAL=(
+  buffered_read
+  concurrent_operations
+  dentry_cache
+  explicit_dir
   gzip
+  implicit_dir
   interrupt
   kernel_list_cache
   local_file
+  log_content
   log_rotation
-  mounting
+  monitoring
   mount_timeout
+  mounting
   negative_stat_cache
+  operations
+  #rapid_appends
   read_large_files
+  readdirplus
+  release_version
   rename_dir_limit
   stale_handle
+  streaming_writes
+  unfinalized_object
   write_large_files
-  #concurrent_operations
-  #explicit_dir
-  #implicit_dir
-  #list_large_dir
-  #log_content
-  #operations
-  #streaming_writes
 )
 
 # For Zonal Buckets :  These tests never become parallel as they are changing bucket permissions.
@@ -265,6 +271,7 @@ TEST_DIR_NON_PARALLEL_ZONAL=(
   "managed_folders"
   "readonly"
   "readonly_creds"
+  "list_large_dir"
 )
 
 # Create a temporary file to store the log file name.
